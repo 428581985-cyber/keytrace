@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Text;
+using KeyTrace.Collect;
 
 namespace KeyTrace;
 
@@ -82,9 +83,8 @@ internal static class Program
     }
 
     /// <summary>
-    /// 阶段 0 只负责确认数据目录可用。真正的采集在阶段 1 实现。
-    /// 返回 2 表示"命令合法但功能未实现"，与 1（用法错误）区分开，
-    /// 方便脚本判断失败原因。
+    /// 采集入口。跑到 Ctrl+C 为止，退出时保证缓冲区落盘。
+    /// 返回 0 表示正常结束（不是异常退出），调用方脚本据此判断。
     /// </summary>
     private static int Collect(string[] args)
     {
@@ -103,9 +103,32 @@ internal static class Program
             ".keytrace",
             "events");
 
-        Directory.CreateDirectory(target);
-        Console.WriteLine($"数据目录：{target}");
-        Console.WriteLine("采集功能尚未实现（阶段 1）。本次仅创建目录后退出。");
-        return 2;
+        using EventWriter writer = new(target);
+        using RawInputCollector collector = new(writer);
+
+        ConsoleCancelEventHandler onCancel = (_, e) =>
+        {
+            e.Cancel = true; // 不要被 Ctrl+C 直接杀掉，让消息循环自己退出
+            collector.RequestStop();
+        };
+
+        Console.CancelKeyPress += onCancel;
+        try
+        {
+            Console.WriteLine($"录制中 → {target}");
+            Console.WriteLine("按 Ctrl+C 结束。");
+            Console.WriteLine();
+
+            collector.Run();
+        }
+        finally
+        {
+            Console.CancelKeyPress -= onCancel;
+            writer.Flush();
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"已停止。共记录 {collector.EventCount} 个事件。");
+        return 0;
     }
 }
