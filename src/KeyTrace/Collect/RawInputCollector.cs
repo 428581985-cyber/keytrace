@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
 using KeyTrace.Control;
@@ -37,6 +38,9 @@ internal sealed class RawInputCollector : IDisposable
     private readonly EventWriter _writer;
     private readonly SessionTracker _sessions = new();
     private readonly ForegroundTracker _foreground = new();
+    private readonly ExclusionList _exclusions;
+    private readonly UiTextSampler _sampler;
+    private readonly bool _captureText;
     private readonly EventWaitHandle? _stopSignal;
     private readonly EventWaitHandle? _pauseSignal;
 
@@ -49,6 +53,9 @@ internal sealed class RawInputCollector : IDisposable
     private readonly IntPtr _rawBuffer = Marshal.AllocHGlobal(RawBufferSize);
 
     private IntPtr _hwnd;
+
+    /// <summary>上一次上屏之后按了多少下键。用来识别"没有击键的文本变化"（粘贴、拖拽）。</summary>
+    private int _keysSinceCommit;
     private bool _hotkeyRegistered;
     private bool _running;
     private bool _disposed;
@@ -56,12 +63,20 @@ internal sealed class RawInputCollector : IDisposable
     public RawInputCollector(
         EventWriter writer,
         EventWaitHandle? stopSignal = null,
-        EventWaitHandle? pauseSignal = null)
+        EventWaitHandle? pauseSignal = null,
+        ExclusionList? exclusions = null,
+        bool captureText = true,
+        bool traceText = false)
     {
         _writer = writer;
         _stopSignal = stopSignal;
         _pauseSignal = pauseSignal;
+        _exclusions = exclusions ?? new ExclusionList();
+        _captureText = captureText;
         _wndProc = OnWndProc;
+        _sampler = new UiTextSampler(
+            OnCommitText, () => IsPaused, _exclusions, traceText,
+            traceText ? Path.Combine(writer.OutputDirectory, "uia-debug.log") : null);
     }
 
     /// <summary>暂停时切换回调，参数为"是否已暂停"。</summary>
@@ -88,6 +103,13 @@ internal sealed class RawInputCollector : IDisposable
 
         _hotkeyRegistered = GlobalHotkey.Register(_hwnd);
         _running = true;
+
+        WriteSessionMeta();
+
+        if (_captureText)
+        {
+            _sampler.Start();
+        }
     }
 
     /// <summary>调试模式的阻塞循环，Ctrl+C 与 stop 信号都能让它退出。</summary>
@@ -267,6 +289,65 @@ internal sealed class RawInputCollector : IDisposable
         Record(raw.Keyboard);
     }
 
+    /// <summary>
+    /// 每次启动写一条 meta 事件，记录当时的输入法方案。
+    /// 全拼和双拼的键位负担完全不同，没有这一条，历史数据没法和后来的对上。
+    /// </summary>
+    private void WriteSessionMeta()
+    {
+        DateTime now = DateTime.Now;
+        DateOnly today = DateOnly.FromDateTime(now);
+        long mono = _clock.ElapsedMilliseconds;
+
+        KeyEvent ev = new()
+        {
+            Ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            Mono = mono,
+            Ev = "meta",
+            Text = "ime=" + ImeConfig.Describe(),
+            Src = "registry",
+            Exe = "keytrace",
+            Sid = _sessions.Observe("keytrace", mono, today),
+        };
+
+        _writer.Write(ev.ToJsonLine(), today);
+    }
+
+    /// <summary>
+    /// UIA 采样线程的回调：把新增文本写成 commit 事件。
+    /// 注意这个方法跑在采样线程上，和消息循环线程并发写同一个文件，
+    /// 所以 EventWriter 内部有锁。
+    /// </summary>
+    private void OnCommitText(string text, string exe, int pid, string eventName)
+    {
+        if (!_running || IsPaused)
+        {
+            return;
+        }
+
+        long mono = _clock.ElapsedMilliseconds;
+        DateTime now = DateTime.Now;
+        DateOnly today = DateOnly.FromDateTime(now);
+        string sid = _sessions.Observe(exe, mono, today);
+
+        KeyEvent ev = new()
+        {
+            Ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            Mono = mono,
+            Ev = eventName,
+            Text = text,
+            Src = "uia",
+            Keys = _keysSinceCommit,
+            Pid = pid,
+            Exe = exe,
+            Sid = sid,
+        };
+
+        _writer.Write(ev.ToJsonLine(), today);
+        EventCount++;
+        _keysSinceCommit = 0;
+    }
+
     private void Record(NativeMethods.RAWKEYBOARD kb)
     {
         // 暂停期间一个事件都不记——连键码都不记，这是"暂停"该有的样子
@@ -287,6 +368,13 @@ internal sealed class RawInputCollector : IDisposable
         DateOnly today = DateOnly.FromDateTime(now);
 
         (uint pid, string exe) = _foreground.Current();
+
+        // 排除名单里的程序（密码管理器、网银等）连键码都不记
+        if (_exclusions.IsExcluded(exe))
+        {
+            return;
+        }
+
         string sid = _sessions.Observe(exe, mono, today);
 
         KeyEvent ev = new()
@@ -304,6 +392,7 @@ internal sealed class RawInputCollector : IDisposable
 
         _writer.Write(ev.ToJsonLine(), today);
         EventCount++;
+        _keysSinceCommit++;
     }
 
     /// <summary>从当前按键状态反推修饰键，对应事件格式里的 mods 位图。</summary>
@@ -332,6 +421,7 @@ internal sealed class RawInputCollector : IDisposable
         }
 
         _disposed = true;
+        _sampler.Dispose();
         _writer.Flush();
 
         if (_hwnd != IntPtr.Zero)

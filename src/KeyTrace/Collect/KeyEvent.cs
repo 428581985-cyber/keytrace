@@ -31,6 +31,12 @@ internal sealed class KeyEvent
     public string? Text { get; init; }
     public string? Src { get; init; }
 
+    /// <summary>
+    /// 促成这次上屏的击键数。0 表示文本不是打出来的（粘贴、拖拽、语音），
+    /// 归因层据此把这些 commit 排除在"打错"统计之外。
+    /// </summary>
+    public int? Keys { get; init; }
+
     public string ToJsonLine()
     {
         StringBuilder sb = new(192);
@@ -54,6 +60,11 @@ internal sealed class KeyEvent
         {
             sb.Append(",\"text\":").Append(Quote(Text));
             sb.Append(",\"src\":").Append(Quote(Src ?? "uia"));
+
+            if (Keys is not null)
+            {
+                sb.Append(",\"keys\":").Append(Keys.Value.ToString(CultureInfo.InvariantCulture));
+            }
         }
 
         sb.Append('}');
