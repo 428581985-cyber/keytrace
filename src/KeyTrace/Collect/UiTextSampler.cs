@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Threading;
@@ -44,6 +45,8 @@ internal sealed class UiTextSampler : IDisposable
     private string _pendingText = string.Empty;
     private DateTime _seenAt = DateTime.MinValue;
     private DateTime _pendingSince = DateTime.MinValue;
+    private AutomationElement? _cachedElement;
+    private int _cachedPid = -1;
 
     public UiTextSampler(
         Action<string, string, int, string> onCommit,
@@ -130,7 +133,15 @@ internal sealed class UiTextSampler : IDisposable
             return;
         }
 
-        string? text = ReadText(focused);
+        AutomationElement? target = ResolveTextElement(focused, pid);
+        if (target is null)
+        {
+            Trace($"no text element in {exe}");
+            Reset();
+            return;
+        }
+
+        string? text = ReadText(target);
         if (text is null)
         {
             Reset();
@@ -144,6 +155,8 @@ internal sealed class UiTextSampler : IDisposable
 
         if (pid != _lastPid)
         {
+            _cachedElement = null;
+            _cachedPid = -1;
             // 换控件/换应用：直接立基线，不把整篇已有内容当成一次输入
             Trace($"baseline {exe} pid={pid} len={text.Length}");
             _lastPid = pid;
@@ -216,13 +229,113 @@ internal sealed class UiTextSampler : IDisposable
         _pendingText = string.Empty;
     }
 
+    /// <summary>
+    /// 焦点元素本身常常不是输入控件（微信的焦点停在 Window 层，浏览器的焦点在 Document 上）。
+    /// 这时从顶层窗口往下找三层，捞一个有文本的 Edit / Document。
+    ///
+    /// Chromium 的可访问性树是惰性构建的，第一次请求可能什么都拿不到，所以找到后缓存，
+    /// 没找到就下一轮再试。
+    /// </summary>
+    private AutomationElement? ResolveTextElement(AutomationElement focused, int pid)
+    {
+        if (ReadText(focused) is not null)
+        {
+            return focused;
+        }
+
+        if (_cachedElement is not null && _cachedPid == pid)
+        {
+            try
+            {
+                if (ReadText(_cachedElement) is not null)
+                {
+                    return _cachedElement;
+                }
+            }
+            catch (ElementNotAvailableException)
+            {
+                _cachedElement = null;
+            }
+        }
+
+        AutomationElement? found = SearchForTextElement(focused);
+        if (found is not null)
+        {
+            Trace($"found text element in {NameOf(pid)}");
+            _cachedElement = found;
+            _cachedPid = pid;
+        }
+
+        return found;
+    }
+
+    /// <summary>广度优先往下找，节点数和层数都封顶，避免在 UI 复杂的程序上卡住采样线程。</summary>
+    private static AutomationElement? SearchForTextElement(AutomationElement start)
+    {
+        const int maxDepth = 4;
+        const int maxNodes = 300;
+
+        Queue<(AutomationElement Element, int Depth)> queue = new();
+        queue.Enqueue((start, 0));
+        int visited = 0;
+
+        while (queue.Count > 0 && visited < maxNodes)
+        {
+            (AutomationElement element, int depth) = queue.Dequeue();
+            visited++;
+
+            if (depth > 0 && ReadText(element) is not null)
+            {
+                return element;
+            }
+
+            if (depth >= maxDepth)
+            {
+                continue;
+            }
+
+            AutomationElement? child;
+            try
+            {
+                child = TreeWalker.ControlViewWalker.GetFirstChild(element);
+            }
+            catch (Exception)
+            {
+                continue;
+            }
+
+            while (child is not null && visited + queue.Count < maxNodes)
+            {
+                queue.Enqueue((child, depth + 1));
+                try
+                {
+                    child = TreeWalker.ControlViewWalker.GetNextSibling(child);
+                }
+                catch (Exception)
+                {
+                    break;
+                }
+            }
+        }
+
+        return null;
+    }
+
     private static string? ReadText(AutomationElement element)
     {
         try
         {
             if (element.TryGetCurrentPattern(ValuePattern.Pattern, out object valuePattern))
             {
-                return ((ValuePattern)valuePattern).Current.Value;
+                string value = ((ValuePattern)valuePattern).Current.Value;
+
+                // Electron 和浏览器的 Document 会把页面 URL 当成 Value 返回，
+                // 那不是用户输入的内容。不排掉的话会误以为"读到了文本"，
+                // 于是永远不去下层找真正的输入框。
+                if (!LooksLikeUrl(value))
+                {
+                    return value;
+                }
             }
         }
         catch (Exception)
@@ -273,6 +386,11 @@ internal sealed class UiTextSampler : IDisposable
 
         return newText.Substring(prefix, length);
     }
+
+    private static bool LooksLikeUrl(string text) =>
+        text.StartsWith("file://", StringComparison.OrdinalIgnoreCase)
+        || text.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+        || text.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
 
     private static bool ContainsNonAscii(string text)
     {

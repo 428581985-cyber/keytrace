@@ -35,7 +35,22 @@
 3. **Electron 和微信没读到**，但探针没做子树遍历，还不能判死——这俩恰好也是日常输入最多的地方，必须测准。
 4. **拿到页面文本 ≠ 拿到输入框**。Edge 给了整页 HTML 文本，但地址栏和网页里的 `<input>` 是两回事，需要分别定位。
 
-## 第二轮要改的探针
+## 第二轮：子树下沉（已实现）
+
+从焦点元素往下广度优先搜 4 层、最多 300 个节点，找带文本的 Edit / Document。
+另外排掉一个坑：Electron 和浏览器的 Document 会把页面 URL 当 Value 返回，
+不排掉会误以为"读到了文本"，于是永远不去下层找真正的输入框。
+
+结果：
+
+| 应用 | 下沉后 | 结论 |
+| --- | --- | --- |
+| WorkBuddy（Electron） | 找不到任何带文本的控件 | **读不到**。与 `yinkaisheng/Python-UIAutomation-for-Windows` 的说明一致：Electron 应用需要自己带 `--force-renderer-accessibility` 启动参数才暴露可访问性树，外部控制不了 |
+
+这条基本判死了 Electron 系应用。它们恰好是日常打字最多的地方，所以结论是：
+**文字层覆盖不到主要场景，分析主力仍是击键层。**
+
+## 第一轮的临时探针
 
 1. **下沉子树**：从焦点元素往上找到顶层窗口，再在窗口子树里搜 `ControlType.Edit` / `Document`，最多三层
 2. **Electron / Chromium**：向 UIA 请求 `Document` 子树时会触发 Chromium 的可访问性树（惰性开启，首次请求可能要等几百毫秒）
