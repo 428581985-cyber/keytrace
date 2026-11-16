@@ -1,8 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <OutputType>Exe</OutputType>
+    <!-- WinExe：不分配控制台。双击或开机自启时不会闪黑框。 -->
+    <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
     <RootNamespace>KeyTrace</RootNamespace>
     <AssemblyName>keytrace</AssemblyName>
     <Nullable>enable</Nullable>
