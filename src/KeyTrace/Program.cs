@@ -1,7 +1,10 @@
 using System;
 using System.IO;
-using System.Text;
+using System.Threading;
+using System.Windows.Forms;
 using KeyTrace.Collect;
+using KeyTrace.Control;
+using KeyTrace.Ui;
 
 namespace KeyTrace;
 
@@ -9,9 +12,10 @@ internal static class Program
 {
     private const string Version = "0.0.1";
 
+    [STAThread]
     private static int Main(string[] args)
     {
-        Console.OutputEncoding = TryUseUtf8();
+        ConsoleBridge.Attach();
 
         if (args.Length == 0)
         {
@@ -30,8 +34,20 @@ internal static class Program
                 Console.WriteLine($"keytrace {Version}");
                 return 0;
 
+            case "run":
+                return RunDaemon(args[1..]);
+
             case "collect":
-                return Collect(args[1..]);
+                return CollectForeground(args[1..]);
+
+            case "pause":
+                return Report(ControlSignals.SignalPause(), "已暂停", "没有正在运行的 KeyTrace。");
+
+            case "resume":
+                return Report(ControlSignals.SignalResume(), "已继续", "没有正在运行的 KeyTrace。");
+
+            case "stop":
+                return Report(ControlSignals.SignalStop(), "已请求停止。", "没有正在运行的 KeyTrace。");
 
             default:
                 Console.Error.WriteLine($"未知命令：{args[0]}");
@@ -40,23 +56,16 @@ internal static class Program
         }
     }
 
-    /// <summary>
-    /// 中文 Windows 的控制台默认是 GBK(936)，而源码是 UTF-8，
-    /// 不显式切换会在部分终端里输出乱码。重定向到管道/文件时设置可能抛
-    /// IOException（此时编码不重要，忽略即可），所以包一层 try。
-    /// </summary>
-    private static Encoding TryUseUtf8()
+    private static int Report(bool ok, string success, string failure)
     {
-        try
+        if (ok)
         {
-            Encoding utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
-            Console.OutputEncoding = utf8;
-            return utf8;
+            Console.WriteLine(success);
+            return 0;
         }
-        catch (IOException)
-        {
-            return Console.OutputEncoding;
-        }
+
+        Console.Error.WriteLine(failure);
+        return 1;
     }
 
     private static void PrintHelp()
@@ -68,47 +77,98 @@ internal static class Program
               keytrace <命令> [选项]
 
             命令：
-              collect    开始录制击键（阶段 1 实现）
-              report     生成统计报告（阶段 1 实现）
-              export     导出为其他工具的格式（阶段 5 实现）
+              run        常驻录制，带托盘图标（推荐日常使用）
+              collect    前台录制，调试用，Ctrl+C 结束
+              pause      暂停录制（等同托盘菜单 / Ctrl+Alt+P）
+              resume     继续录制
+              stop       让常驻进程退出
 
             选项：
-              -h, --help    显示本帮助
-              --version     显示版本
+              --out <目录>   数据目录，默认 %USERPROFILE%\.keytrace\events
+              -h, --help     显示本帮助
+              --version      显示版本
 
-            数据位置：
-              默认写入 %USERPROFILE%\.keytrace\events\YYYY-MM-DD.jsonl
-              全部数据只存本地，不联网。
+            全部数据只存本地，不联网。
             """);
     }
 
-    /// <summary>
-    /// 采集入口。跑到 Ctrl+C 为止，退出时保证缓冲区落盘。
-    /// 返回 0 表示正常结束（不是异常退出），调用方脚本据此判断。
-    /// </summary>
-    private static int Collect(string[] args)
+    /// <summary>常驻模式：单实例 + 托盘 + 热键 + 采集，靠 Application.Run 泵消息。</summary>
+    private static int RunDaemon(string[] args)
     {
-        string? outDir = null;
-        for (int i = 0; i < args.Length; i++)
+        string target = ResolveDataDirectory(args);
+
+        using Mutex? instance = ControlSignals.TryAcquireInstance();
+        if (instance is null)
         {
-            if (args[i] == "--out" && i + 1 < args.Length)
-            {
-                outDir = args[i + 1];
-                i++;
-            }
+            Console.Error.WriteLine("已经有一个 KeyTrace 在运行了。");
+            return 1;
         }
 
-        string target = outDir ?? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".keytrace",
-            "events");
+        (EventWaitHandle stopSignal, EventWaitHandle pauseSignal) = ControlSignals.CreateServerSide();
+        using EventWaitHandle stop = stopSignal;
+        using EventWaitHandle pause = pauseSignal;
+
+        using EventWriter writer = new(target);
+        using RawInputCollector collector = new(writer, stop, pause);
+        TrayApplication tray = new(target);
+
+        bool exiting = false;
+
+        void Shutdown()
+        {
+            if (exiting)
+            {
+                return;
+            }
+
+            exiting = true;
+            tray.Shutdown();
+            Application.ExitThread();
+        }
+
+        tray.ToggleRequested += collector.TogglePause;
+        tray.ExitRequested += () =>
+        {
+            collector.RequestStop();
+            Shutdown();
+        };
+
+        collector.PauseChanged += tray.SetPaused;
+        collector.Stopped += Shutdown;
+
+        try
+        {
+            collector.Start();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.Message);
+            tray.Shutdown();
+            return 1;
+        }
+
+        if (!collector.HotkeyRegistered)
+        {
+            tray.Notify($"热键 {GlobalHotkey.Description} 被其他程序占用，请用托盘菜单暂停。");
+        }
+
+        Application.Run(tray);
+
+        writer.Flush();
+        return 0;
+    }
+
+    /// <summary>调试模式：前台跑，Ctrl+C 或 stop 都能结束。</summary>
+    private static int CollectForeground(string[] args)
+    {
+        string target = ResolveDataDirectory(args);
 
         using EventWriter writer = new(target);
         using RawInputCollector collector = new(writer);
 
         ConsoleCancelEventHandler onCancel = (_, e) =>
         {
-            e.Cancel = true; // 不要被 Ctrl+C 直接杀掉，让消息循环自己退出
+            e.Cancel = true; // 不要被 Ctrl+C 直接杀掉，让消息循环自然收尾并落盘
             collector.RequestStop();
         };
 
@@ -130,5 +190,21 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine($"已停止。共记录 {collector.EventCount} 个事件。");
         return 0;
+    }
+
+    private static string ResolveDataDirectory(string[] args)
+    {
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (args[i] == "--out" && i + 1 < args.Length)
+            {
+                return args[i + 1];
+            }
+        }
+
+        return Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".keytrace",
+            "events");
     }
 }

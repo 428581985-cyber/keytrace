@@ -1,6 +1,8 @@
 using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Threading;
+using KeyTrace.Control;
 using KeyTrace.Interop;
 
 namespace KeyTrace.Collect;
@@ -14,21 +16,31 @@ namespace KeyTrace.Collect;
 ///
 /// 窗口必须是隐藏的**顶层**窗口，不能是 message-only 窗口：
 /// message-only 窗口收不到 RIDEV_INPUTSINK 的 WM_INPUT。
+///
+/// <para>
+/// 两种运行方式共用同一套窗口与采集逻辑：
+/// <list type="bullet">
+/// <item><c>Run()</c>——自带消息循环，给 <c>keytrace collect</c> 调试用，Ctrl+C 退出</item>
+/// <item><c>Start()</c>——只建窗口不循环，消息由 WinForms 的 Application.Run 泵，给常驻用</item>
+/// </list>
+/// </para>
 /// </summary>
 internal sealed class RawInputCollector : IDisposable
 {
     private const string WindowClass = "KeyTraceRawInputSink";
     private const int RawBufferSize = 128;
 
-    /// <summary>落盘间隔。见 WndProc 里 WM_TIMER 的注释。</summary>
-    private const uint FlushIntervalMs = 1_000;
-    private const uint FlushTimerId = 1;
+    /// <summary>落盘与信号检查的间隔。见 WndProc 里 WM_TIMER 的注释。</summary>
+    private const uint TickIntervalMs = 1_000;
+    private const uint TickTimerId = 1;
 
     private readonly EventWriter _writer;
     private readonly SessionTracker _sessions = new();
     private readonly ForegroundTracker _foreground = new();
+    private readonly EventWaitHandle? _stopSignal;
+    private readonly EventWaitHandle? _pauseSignal;
 
-    /// <summary>单调时钟，只用来算间隔；和墙钟的偏差由 ts 字段承担。</summary>
+    /// <summary>单调时钟，只用来算间隔；墙钟由 ts 字段承担。</summary>
     private readonly Stopwatch _clock = Stopwatch.StartNew();
 
     /// <summary>必须作为字段持有：委托被 GC 回收后，原生回调会指向已释放的存根而崩溃。</summary>
@@ -37,46 +49,97 @@ internal sealed class RawInputCollector : IDisposable
     private readonly IntPtr _rawBuffer = Marshal.AllocHGlobal(RawBufferSize);
 
     private IntPtr _hwnd;
+    private bool _hotkeyRegistered;
     private bool _running;
     private bool _disposed;
 
-    public RawInputCollector(EventWriter writer)
+    public RawInputCollector(
+        EventWriter writer,
+        EventWaitHandle? stopSignal = null,
+        EventWaitHandle? pauseSignal = null)
     {
         _writer = writer;
+        _stopSignal = stopSignal;
+        _pauseSignal = pauseSignal;
         _wndProc = OnWndProc;
     }
 
+    /// <summary>暂停时切换回调，参数为"是否已暂停"。</summary>
+    public event Action<bool>? PauseChanged;
+
+    /// <summary>收到停止请求时触发。</summary>
+    public event Action? Stopped;
+
     public long EventCount { get; private set; }
 
-    public void Run()
+    public string DataDirectory => _writer.OutputDirectory;
+
+    /// <summary>热键被别的程序占用时为 false，此时只能靠托盘菜单暂停。</summary>
+    public bool HotkeyRegistered => _hotkeyRegistered;
+
+    public bool IsPaused => _pauseSignal?.WaitOne(0) ?? false;
+
+    /// <summary>建窗口、注册设备、装热键。不进入消息循环。</summary>
+    public void Start()
     {
         CreateWindowHost();
-        try
-        {
-            RegisterKeyboard();
-            NativeMethods.SetTimer(_hwnd, new UIntPtr(FlushTimerId), FlushIntervalMs, IntPtr.Zero);
+        RegisterKeyboard();
+        NativeMethods.SetTimer(_hwnd, new UIntPtr(TickTimerId), TickIntervalMs, IntPtr.Zero);
 
-            _running = true;
-            while (_running && NativeMethods.GetMessage(out NativeMethods.MSG msg, IntPtr.Zero, 0, 0) > 0)
-            {
-                NativeMethods.TranslateMessage(ref msg);
-                NativeMethods.DispatchMessage(ref msg);
-            }
-        }
-        finally
-        {
-            _writer.Flush();
-        }
+        _hotkeyRegistered = GlobalHotkey.Register(_hwnd);
+        _running = true;
     }
 
-    /// <summary>从 Ctrl+C 处理器（另一个线程）调用，所以走 PostMessage 而不是直接改状态。</summary>
+    /// <summary>调试模式的阻塞循环，Ctrl+C 与 stop 信号都能让它退出。</summary>
+    public void Run()
+    {
+        Start();
+        while (_running && NativeMethods.GetMessage(out NativeMethods.MSG msg, IntPtr.Zero, 0, 0) > 0)
+        {
+            NativeMethods.TranslateMessage(ref msg);
+            NativeMethods.DispatchMessage(ref msg);
+        }
+
+        _writer.Flush();
+    }
+
     public void RequestStop()
     {
+        if (!_running)
+        {
+            return;
+        }
+
         _running = false;
+        _writer.Flush();
+        Stopped?.Invoke();
+
+        // 调试模式下有人在泵自己的循环，发个 WM_CLOSE 让它自然收尾
         if (_hwnd != IntPtr.Zero)
         {
             NativeMethods.PostMessage(_hwnd, NativeMethods.WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
         }
+    }
+
+    public void TogglePause()
+    {
+        if (_pauseSignal is null)
+        {
+            return;
+        }
+
+        bool nowPaused = !IsPaused;
+        if (nowPaused)
+        {
+            _pauseSignal.Set();
+        }
+        else
+        {
+            _pauseSignal.Reset();
+        }
+
+        _writer.Flush();
+        PauseChanged?.Invoke(nowPaused);
     }
 
     private void CreateWindowHost()
@@ -137,14 +200,33 @@ internal sealed class RawInputCollector : IDisposable
                 HandleRawInput(lParam);
                 return IntPtr.Zero;
 
-            // 定时落盘。为什么不能"下一条按键到来时顺便 flush"：
-            // 打完最后一个字就去开会、或者进程被杀，那批数据永远等不到下一次按键，会整批丢掉。
-            // 定时器由窗口消息驱动，独立于有没有按键，1 秒最多丢 1 秒的数据。
+            // 定时器干两件事：落盘 + 检查停止信号。
+            // 为什么不能"下一条按键到来时顺便 flush"：打完最后一个字就去开会、或者进程被杀，
+            // 那批数据永远等不到下一次按键，会整批丢掉。
+            // 停止信号用轮询而不是 WaitOne 阻塞，是因为不能被阻塞在采集线程上。
             case NativeMethods.WM_TIMER:
                 _writer.Flush();
+                if (_stopSignal?.WaitOne(0) == true)
+                {
+                    RequestStop();
+                }
+
+                return IntPtr.Zero;
+
+            case NativeMethods.WM_HOTKEY:
+                if (wParam.ToInt32() == GlobalHotkey.Id)
+                {
+                    TogglePause();
+                }
+
+                return IntPtr.Zero;
+
+            case NativeMethods.WM_CLOSE:
+                NativeMethods.DestroyWindow(hwnd);
                 return IntPtr.Zero;
 
             case NativeMethods.WM_DESTROY:
+                // 调试模式靠这条退出；常驻模式下没有自己的循环，PostQuitMessage 是空操作
                 NativeMethods.PostQuitMessage(0);
                 return IntPtr.Zero;
 
@@ -187,6 +269,12 @@ internal sealed class RawInputCollector : IDisposable
 
     private void Record(NativeMethods.RAWKEYBOARD kb)
     {
+        // 暂停期间一个事件都不记——连键码都不记，这是"暂停"该有的样子
+        if (!_running || IsPaused)
+        {
+            return;
+        }
+
         // 255 是输入法用来查询 Shift 状态的伪按键，不是真实击键
         if (kb.VKey is 0 or 0xFF)
         {
@@ -216,16 +304,9 @@ internal sealed class RawInputCollector : IDisposable
 
         _writer.Write(ev.ToJsonLine(), today);
         EventCount++;
-
-        if (EventCount % 20 == 0)
-        {
-            Console.Write($"\r已记录 {EventCount} 个事件");
-        }
     }
 
-    /// <summary>
-    /// 从当前按键状态反推修饰键，对应事件格式里的 mods 位图。
-    /// </summary>
+    /// <summary>从当前按键状态反推修饰键，对应事件格式里的 mods 位图。</summary>
     private static int ReadModifiers()
     {
         const int VK_SHIFT = 0x10;
@@ -251,9 +332,16 @@ internal sealed class RawInputCollector : IDisposable
         }
 
         _disposed = true;
+        _writer.Flush();
 
         if (_hwnd != IntPtr.Zero)
         {
+            if (_hotkeyRegistered)
+            {
+                GlobalHotkey.Unregister(_hwnd);
+            }
+
+            NativeMethods.KillTimer(_hwnd, new UIntPtr(TickTimerId));
             NativeMethods.DestroyWindow(_hwnd);
             _hwnd = IntPtr.Zero;
         }

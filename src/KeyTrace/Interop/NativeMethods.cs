@@ -16,6 +16,7 @@ internal static class NativeMethods
     internal const int WM_CLOSE = 0x0010;
     internal const int WM_DESTROY = 0x0002;
     internal const int WM_TIMER = 0x0113;
+    internal const int WM_HOTKEY = 0x0312;
 
     // ---------- Raw Input ----------
     /// <summary>即使窗口不在前台也接收输入（后台采集的关键）。</summary>
@@ -164,6 +165,22 @@ internal static class NativeMethods
     /// <summary>返回值最高位为 1 表示该键当前处于按下状态。</summary>
     [DllImport("user32.dll")]
     internal static extern short GetAsyncKeyState(int vKey);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+
+    // ---------- 控制台 ----------
+    internal const uint ATTACH_PARENT_PROCESS = 0xFFFFFFFF;
+
+    /// <summary>
+    /// WinExe 没有自己的控制台；从终端启动时可以用它"借用"父进程的控制台，
+    /// 让 --help / stop 这类命令的输出能显示在用户眼前。
+    /// </summary>
+    [DllImport("kernel32.dll", SetLastError = true)]
+    internal static extern bool AttachConsole(uint dwProcessId);
 
     // ---------- kernel32 ----------
     [DllImport("kernel32.dll", SetLastError = true)]
