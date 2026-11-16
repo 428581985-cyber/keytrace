@@ -101,6 +101,8 @@ internal sealed class RawInputCollector : IDisposable
         _hotkeyRegistered = GlobalHotkey.Register(_hwnd);
         _running = true;
 
+        WriteSessionMeta();
+
         if (_captureText)
         {
             _sampler.Start();
@@ -282,6 +284,30 @@ internal sealed class RawInputCollector : IDisposable
         }
 
         Record(raw.Keyboard);
+    }
+
+    /// <summary>
+    /// 每次启动写一条 meta 事件，记录当时的输入法方案。
+    /// 全拼和双拼的键位负担完全不同，没有这一条，历史数据没法和后来的对上。
+    /// </summary>
+    private void WriteSessionMeta()
+    {
+        DateTime now = DateTime.Now;
+        DateOnly today = DateOnly.FromDateTime(now);
+        long mono = _clock.ElapsedMilliseconds;
+
+        KeyEvent ev = new()
+        {
+            Ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            Mono = mono,
+            Ev = "meta",
+            Text = "ime=" + ImeConfig.Describe(),
+            Src = "registry",
+            Exe = "keytrace",
+            Sid = _sessions.Observe("keytrace", mono, today),
+        };
+
+        _writer.Write(ev.ToJsonLine(), today);
     }
 
     /// <summary>
