@@ -53,6 +53,9 @@ internal sealed class RawInputCollector : IDisposable
     private readonly IntPtr _rawBuffer = Marshal.AllocHGlobal(RawBufferSize);
 
     private IntPtr _hwnd;
+
+    /// <summary>上一次上屏之后按了多少下键。用来识别"没有击键的文本变化"（粘贴、拖拽）。</summary>
+    private int _keysSinceCommit;
     private bool _hotkeyRegistered;
     private bool _running;
     private bool _disposed;
@@ -334,6 +337,7 @@ internal sealed class RawInputCollector : IDisposable
             Ev = eventName,
             Text = text,
             Src = "uia",
+            Keys = _keysSinceCommit,
             Pid = pid,
             Exe = exe,
             Sid = sid,
@@ -341,6 +345,7 @@ internal sealed class RawInputCollector : IDisposable
 
         _writer.Write(ev.ToJsonLine(), today);
         EventCount++;
+        _keysSinceCommit = 0;
     }
 
     private void Record(NativeMethods.RAWKEYBOARD kb)
@@ -387,6 +392,7 @@ internal sealed class RawInputCollector : IDisposable
 
         _writer.Write(ev.ToJsonLine(), today);
         EventCount++;
+        _keysSinceCommit++;
     }
 
     /// <summary>从当前按键状态反推修饰键，对应事件格式里的 mods 位图。</summary>

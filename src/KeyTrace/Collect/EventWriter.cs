@@ -30,6 +30,7 @@ internal sealed class EventWriter : IDisposable
     {
         _directory = directory;
         Directory.CreateDirectory(directory);
+        LogRotator.Run(directory, DateOnly.FromDateTime(DateTime.Now));
     }
 
     public string OutputDirectory => _directory;
@@ -67,6 +68,10 @@ internal sealed class EventWriter : IDisposable
         }
 
         CloseWriter();
+
+        // 跨天时顺手轮转一次，长跑进程不用等下次重启
+        LogRotator.Run(_directory, today);
+
         string path = Path.Combine(_directory, $"{today.ToString("yyyy-MM-dd")}.jsonl");
         FileStream stream = new(path, FileMode.Append, FileAccess.Write, FileShare.Read);
         _writer = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false))

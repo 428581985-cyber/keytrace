@@ -369,7 +369,7 @@ internal sealed class UiTextSampler : IDisposable
     /// 取"新增"的那一段：公共前缀之后、公共后缀之前。
     /// 纯删除返回空（删除不是输入）；整篇被替换也返回空，避免把一次重排当成打了一大段。
     /// </summary>
-    private static string Diff(string oldText, string newText)
+    internal static string Diff(string oldText, string newText)
     {
         int prefix = 0;
         int min = Math.Min(oldText.Length, newText.Length);
@@ -395,12 +395,12 @@ internal sealed class UiTextSampler : IDisposable
         return newText.Substring(prefix, length);
     }
 
-    private static bool LooksLikeUrl(string text) =>
+    internal static bool LooksLikeUrl(string text) =>
         text.StartsWith("file://", StringComparison.OrdinalIgnoreCase)
         || text.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
         || text.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
 
-    private static bool ContainsNonAscii(string text)
+    internal static bool ContainsNonAscii(string text)
     {
         foreach (char c in text)
         {

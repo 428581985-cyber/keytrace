@@ -15,4 +15,8 @@
     <Version>0.0.1</Version>
   </PropertyGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="KeyTrace.Tests" />
+  </ItemGroup>
+
 </Project>
