@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
 using KeyTrace.Control;
@@ -61,7 +62,8 @@ internal sealed class RawInputCollector : IDisposable
         EventWaitHandle? stopSignal = null,
         EventWaitHandle? pauseSignal = null,
         ExclusionList? exclusions = null,
-        bool captureText = true)
+        bool captureText = true,
+        bool traceText = false)
     {
         _writer = writer;
         _stopSignal = stopSignal;
@@ -69,7 +71,9 @@ internal sealed class RawInputCollector : IDisposable
         _exclusions = exclusions ?? new ExclusionList();
         _captureText = captureText;
         _wndProc = OnWndProc;
-        _sampler = new UiTextSampler(OnCommitText, () => IsPaused, _exclusions);
+        _sampler = new UiTextSampler(
+            OnCommitText, () => IsPaused, _exclusions, traceText,
+            traceText ? Path.Combine(writer.OutputDirectory, "uia-debug.log") : null);
     }
 
     /// <summary>暂停时切换回调，参数为"是否已暂停"。</summary>
@@ -285,7 +289,7 @@ internal sealed class RawInputCollector : IDisposable
     /// 注意这个方法跑在采样线程上，和消息循环线程并发写同一个文件，
     /// 所以 EventWriter 内部有锁。
     /// </summary>
-    private void OnCommitText(string text, string exe, int pid)
+    private void OnCommitText(string text, string exe, int pid, string eventName)
     {
         if (!_running || IsPaused)
         {
@@ -301,7 +305,7 @@ internal sealed class RawInputCollector : IDisposable
         {
             Ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             Mono = mono,
-            Ev = "commit",
+            Ev = eventName,
             Text = text,
             Src = "uia",
             Pid = pid,

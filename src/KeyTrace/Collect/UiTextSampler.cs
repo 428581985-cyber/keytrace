@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.IO;
 using System.Threading;
 using System.Windows.Automation;
 
@@ -9,36 +10,52 @@ namespace KeyTrace.Collect;
 /// <summary>
 /// 上屏文字采集：定时读焦点控件的文本，和上一帧比对，把新增的部分作为 commit 事件。
 ///
-/// 为什么不用 IME 消息（WM_IME_COMPOSITION）：浏览器、Electron 走 TSF，根本不发这个消息。
-/// 已经实测：记事本的 ValuePattern 能读到组字中间态，Word 的 TextPattern 能读全文。
+/// 不用 IME 消息（WM_IME_COMPOSITION）：浏览器、Electron 走 TSF，不发这个消息。
+/// 实测记事本的 ValuePattern 能读到组字中间态，Word 的 TextPattern 能读全文。
 ///
-/// 读不到的应用不降级、不假装：没有 commit 事件就是没有，下游按"只有击键"处理。
+/// 关键细节：组字过程中文本一直在变（全拼字母加分隔符，例如 he'l），那不叫上屏。
+/// 所以差分出的片段要静置 StableMs 没再变化才算 commit，否则会把拼音字母当成汉字记下来。
 /// </summary>
 internal sealed class UiTextSampler : IDisposable
 {
     private const int IntervalMs = 150;
+    private const int StableMs = 300;
     private const int MaxTextLength = 4000;
     private const int MaxCommitLength = 200;
 
     private static readonly ConcurrentDictionary<int, string> NameCache = new();
 
-    private readonly Action<string, string, int> _onCommit;
+    private static bool TraceEnabled;
+    private static string TracePath = Path.Combine(Path.GetTempPath(), "keytrace-uia.log");
+
+    private readonly Action<string, string, int, string> _onCommit;
     private readonly Func<bool> _isPaused;
     private readonly ExclusionList _exclusions;
     private readonly Thread _thread;
     private volatile bool _stop;
 
     private int _lastPid = -1;
-    private string _lastText = string.Empty;
+    private string _seenText = string.Empty;
+    private string _confirmedText = string.Empty;
+    private DateTime _seenAt = DateTime.MinValue;
 
     public UiTextSampler(
-        Action<string, string, int> onCommit,
+        Action<string, string, int, string> onCommit,
         Func<bool> isPaused,
-        ExclusionList exclusions)
+        ExclusionList exclusions,
+        bool traceText,
+        string? tracePath = null)
     {
         _onCommit = onCommit;
         _isPaused = isPaused;
         _exclusions = exclusions;
+        TraceEnabled = traceText;
+
+        if (tracePath is not null)
+        {
+            TracePath = tracePath;
+        }
+
         _thread = new Thread(Loop)
         {
             IsBackground = true,
@@ -46,10 +63,16 @@ internal sealed class UiTextSampler : IDisposable
         };
     }
 
-    public void Start() => _thread.Start();
+    public void Start()
+    {
+        Trace("sampler start");
+        _thread.Start();
+    }
 
     private void Loop()
     {
+        Trace("thread alive");
+
         while (!_stop)
         {
             Thread.Sleep(IntervalMs);
@@ -68,9 +91,10 @@ internal sealed class UiTextSampler : IDisposable
             {
                 Reset();
             }
-            catch (Exception)
+            catch (Exception ex)
             {
                 // UIA 在目标程序卡死时可能抛任何东西，一次失败不该终止采集
+                Trace("EX " + ex.GetType().Name + ": " + ex.Message);
                 Reset();
             }
         }
@@ -114,19 +138,48 @@ internal sealed class UiTextSampler : IDisposable
 
         if (pid != _lastPid)
         {
-            // 换控件/换应用：先立基线，不把它当成一次输入
+            // 换控件/换应用：直接立基线，不把整篇已有内容当成一次输入
+            Trace($"baseline {exe} pid={pid} len={text.Length}");
             _lastPid = pid;
-            _lastText = text;
+            _seenText = text;
+            _confirmedText = text;
+            _seenAt = DateTime.UtcNow;
             return;
         }
 
-        string added = Diff(_lastText, text);
-        _lastText = text;
-
-        if (added.Length > 0)
+        if (text != _seenText)
         {
-            _onCommit(added, exe, pid);
+            // 还在变，说明组字或输入没结束，先记时间戳
+            _seenText = text;
+            _seenAt = DateTime.UtcNow;
+            return;
         }
+
+        if ((DateTime.UtcNow - _seenAt).TotalMilliseconds < StableMs || text == _confirmedText)
+        {
+            return;
+        }
+
+        string added = Diff(_confirmedText, text);
+
+        // 整篇被替换（比如切换文档）不算输入，只更新基线
+        _confirmedText = text;
+
+        if (added.Length == 0)
+        {
+            return;
+        }
+
+        // 中文模式下，纯 ASCII 的增量是组字中间态（拼音和分隔符），不是上屏。
+        // 用时间阈值区分不了：组字时会停下来选字，一停就"稳定"了。
+        string ev = "commit";
+        if (IsAsciiOnly(added) && ImeState.IsChineseMode())
+        {
+            ev = "comp";
+        }
+
+        Trace($"{ev} [{added}] from {exe}");
+        _onCommit(added, exe, pid, ev);
     }
 
     private static string? ReadText(AutomationElement element)
@@ -187,6 +240,19 @@ internal sealed class UiTextSampler : IDisposable
         return newText.Substring(prefix, length);
     }
 
+    private static bool IsAsciiOnly(string text)
+    {
+        foreach (char c in text)
+        {
+            if (c > 0x7F)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     private static string NameOf(int pid)
     {
         if (NameCache.TryGetValue(pid, out string? cached))
@@ -208,10 +274,28 @@ internal sealed class UiTextSampler : IDisposable
         return name;
     }
 
+    private static void Trace(string message)
+    {
+        if (!TraceEnabled)
+        {
+            return;
+        }
+
+        try
+        {
+            File.AppendAllText(TracePath, $"{DateTime.Now:HH:mm:ss.fff} {message}\n");
+        }
+        catch (Exception)
+        {
+        }
+    }
+
     private void Reset()
     {
         _lastPid = -1;
-        _lastText = string.Empty;
+        _seenText = string.Empty;
+        _confirmedText = string.Empty;
+        _seenAt = DateTime.MinValue;
     }
 
     public void Dispose()

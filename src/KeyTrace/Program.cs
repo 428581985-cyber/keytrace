@@ -109,7 +109,10 @@ internal static class Program
         using EventWaitHandle pause = pauseSignal;
 
         using EventWriter writer = new(target);
-        using RawInputCollector collector = new(writer, stop, pause, captureText: !HasFlag(args, "--no-text"));
+        using RawInputCollector collector = new(
+            writer, stop, pause,
+            captureText: !HasFlag(args, "--no-text"),
+            traceText: HasFlag(args, "--debug-text"));
         TrayApplication tray = new(target);
 
         bool exiting = false;
