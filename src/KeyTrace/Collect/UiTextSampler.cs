@@ -23,6 +23,10 @@ internal sealed class UiTextSampler : IDisposable
     private const int MaxTextLength = 4000;
     private const int MaxCommitLength = 200;
 
+    /// <summary>纯 ASCII 增量挂起多久后仍无汉字出现，才认定为真上屏。</summary>
+    private const int AsciiHoldMs = 1800;
+
+
     private static readonly ConcurrentDictionary<int, string> NameCache = new();
 
     private static bool TraceEnabled;
@@ -37,7 +41,9 @@ internal sealed class UiTextSampler : IDisposable
     private int _lastPid = -1;
     private string _seenText = string.Empty;
     private string _confirmedText = string.Empty;
+    private string _pendingText = string.Empty;
     private DateTime _seenAt = DateTime.MinValue;
+    private DateTime _pendingSince = DateTime.MinValue;
 
     public UiTextSampler(
         Action<string, string, int, string> onCommit,
@@ -162,24 +168,52 @@ internal sealed class UiTextSampler : IDisposable
 
         string added = Diff(_confirmedText, text);
 
-        // 整篇被替换（比如切换文档）不算输入，只更新基线
-        _confirmedText = text;
-
         if (added.Length == 0)
+        {
+            // 纯删除或整篇替换：只推进基线，不算输入
+            _confirmedText = text;
+            _pendingSince = DateTime.MinValue;
+            return;
+        }
+
+        if (ContainsNonAscii(added))
+        {
+            // 出现汉字（或中文标点）：之前挂着的拼音说明被替换掉了，直接丢掉
+            if (_pendingSince != DateTime.MinValue)
+            {
+                Trace($"drop held [{_pendingText}]");
+            }
+
+            _confirmedText = text;
+            _pendingSince = DateTime.MinValue;
+            _pendingText = string.Empty;
+            Trace($"commit [{added}] from {exe}");
+            _onCommit(added, exe, pid, "commit");
+            return;
+        }
+
+        // 纯 ASCII：可能是组字中的拼音，也可能是真的在打英文。
+        // 挂起来，等它被汉字替换（丢弃）或者超时（认定为上屏）。
+        if (_pendingSince == DateTime.MinValue)
+        {
+            _pendingSince = DateTime.UtcNow;
+            _pendingText = added;
+            Trace($"hold [{added}]");
+            return;
+        }
+
+        _pendingText = added;
+
+        if ((DateTime.UtcNow - _pendingSince).TotalMilliseconds < AsciiHoldMs)
         {
             return;
         }
 
-        // 中文模式下，纯 ASCII 的增量是组字中间态（拼音和分隔符），不是上屏。
-        // 用时间阈值区分不了：组字时会停下来选字，一停就"稳定"了。
-        string ev = "commit";
-        if (IsAsciiOnly(added) && ImeState.IsChineseMode())
-        {
-            ev = "comp";
-        }
-
-        Trace($"{ev} [{added}] from {exe}");
-        _onCommit(added, exe, pid, ev);
+        _confirmedText = text;
+        _pendingSince = DateTime.MinValue;
+        Trace($"commit(held timeout) [{added}] from {exe}");
+        _onCommit(added, exe, pid, "commit");
+        _pendingText = string.Empty;
     }
 
     private static string? ReadText(AutomationElement element)
@@ -240,17 +274,17 @@ internal sealed class UiTextSampler : IDisposable
         return newText.Substring(prefix, length);
     }
 
-    private static bool IsAsciiOnly(string text)
+    private static bool ContainsNonAscii(string text)
     {
         foreach (char c in text)
         {
             if (c > 0x7F)
             {
-                return false;
+                return true;
             }
         }
 
-        return true;
+        return false;
     }
 
     private static string NameOf(int pid)
@@ -295,7 +329,9 @@ internal sealed class UiTextSampler : IDisposable
         _lastPid = -1;
         _seenText = string.Empty;
         _confirmedText = string.Empty;
+        _pendingText = string.Empty;
         _seenAt = DateTime.MinValue;
+        _pendingSince = DateTime.MinValue;
     }
 
     public void Dispose()
