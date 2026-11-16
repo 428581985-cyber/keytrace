@@ -14,6 +14,13 @@ internal sealed class EventWriter : IDisposable
     private const int FlushEvery = 32;
 
     private readonly string _directory;
+
+    /// <summary>
+    /// 两个线程会同时写：消息循环线程写击键，UIA 采样线程写上屏文本。
+    /// StreamWriter 不是线程安全的，所以所有读写都串行化。
+    /// </summary>
+    private readonly object _gate = new();
+
     private StreamWriter? _writer;
     private DateOnly _day;
     private int _pending;
@@ -31,19 +38,25 @@ internal sealed class EventWriter : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        EnsureWriterFor(today);
-        _writer!.WriteLine(line);
-
-        if (++_pending >= FlushEvery)
+        lock (_gate)
         {
-            Flush();
+            EnsureWriterFor(today);
+            _writer!.WriteLine(line);
+
+            if (++_pending >= FlushEvery)
+            {
+                Flush();
+            }
         }
     }
 
     public void Flush()
     {
-        _writer?.Flush();
-        _pending = 0;
+        lock (_gate)
+        {
+            _writer?.Flush();
+            _pending = 0;
+        }
     }
 
     private void EnsureWriterFor(DateOnly today)

@@ -37,6 +37,9 @@ internal sealed class RawInputCollector : IDisposable
     private readonly EventWriter _writer;
     private readonly SessionTracker _sessions = new();
     private readonly ForegroundTracker _foreground = new();
+    private readonly ExclusionList _exclusions;
+    private readonly UiTextSampler _sampler;
+    private readonly bool _captureText;
     private readonly EventWaitHandle? _stopSignal;
     private readonly EventWaitHandle? _pauseSignal;
 
@@ -56,12 +59,17 @@ internal sealed class RawInputCollector : IDisposable
     public RawInputCollector(
         EventWriter writer,
         EventWaitHandle? stopSignal = null,
-        EventWaitHandle? pauseSignal = null)
+        EventWaitHandle? pauseSignal = null,
+        ExclusionList? exclusions = null,
+        bool captureText = true)
     {
         _writer = writer;
         _stopSignal = stopSignal;
         _pauseSignal = pauseSignal;
+        _exclusions = exclusions ?? new ExclusionList();
+        _captureText = captureText;
         _wndProc = OnWndProc;
+        _sampler = new UiTextSampler(OnCommitText, () => IsPaused, _exclusions);
     }
 
     /// <summary>暂停时切换回调，参数为"是否已暂停"。</summary>
@@ -88,6 +96,11 @@ internal sealed class RawInputCollector : IDisposable
 
         _hotkeyRegistered = GlobalHotkey.Register(_hwnd);
         _running = true;
+
+        if (_captureText)
+        {
+            _sampler.Start();
+        }
     }
 
     /// <summary>调试模式的阻塞循环，Ctrl+C 与 stop 信号都能让它退出。</summary>
@@ -267,6 +280,39 @@ internal sealed class RawInputCollector : IDisposable
         Record(raw.Keyboard);
     }
 
+    /// <summary>
+    /// UIA 采样线程的回调：把新增文本写成 commit 事件。
+    /// 注意这个方法跑在采样线程上，和消息循环线程并发写同一个文件，
+    /// 所以 EventWriter 内部有锁。
+    /// </summary>
+    private void OnCommitText(string text, string exe, int pid)
+    {
+        if (!_running || IsPaused)
+        {
+            return;
+        }
+
+        long mono = _clock.ElapsedMilliseconds;
+        DateTime now = DateTime.Now;
+        DateOnly today = DateOnly.FromDateTime(now);
+        string sid = _sessions.Observe(exe, mono, today);
+
+        KeyEvent ev = new()
+        {
+            Ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            Mono = mono,
+            Ev = "commit",
+            Text = text,
+            Src = "uia",
+            Pid = pid,
+            Exe = exe,
+            Sid = sid,
+        };
+
+        _writer.Write(ev.ToJsonLine(), today);
+        EventCount++;
+    }
+
     private void Record(NativeMethods.RAWKEYBOARD kb)
     {
         // 暂停期间一个事件都不记——连键码都不记，这是"暂停"该有的样子
@@ -287,6 +333,13 @@ internal sealed class RawInputCollector : IDisposable
         DateOnly today = DateOnly.FromDateTime(now);
 
         (uint pid, string exe) = _foreground.Current();
+
+        // 排除名单里的程序（密码管理器、网银等）连键码都不记
+        if (_exclusions.IsExcluded(exe))
+        {
+            return;
+        }
+
         string sid = _sessions.Observe(exe, mono, today);
 
         KeyEvent ev = new()
@@ -332,6 +385,7 @@ internal sealed class RawInputCollector : IDisposable
         }
 
         _disposed = true;
+        _sampler.Dispose();
         _writer.Flush();
 
         if (_hwnd != IntPtr.Zero)

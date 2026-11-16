@@ -5,6 +5,8 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
+    <!-- 为了 System.Windows.Automation（UIA），读上屏文字要用；和 WinForms 同属 WindowsDesktop，不额外增重 -->
+    <UseWPF>true</UseWPF>
     <RootNamespace>KeyTrace</RootNamespace>
     <AssemblyName>keytrace</AssemblyName>
     <Nullable>enable</Nullable>
