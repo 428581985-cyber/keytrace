@@ -1,0 +1,46 @@
+name: 应用兼容性上报
+description: 某个程序里采集不到上屏文本或击键
+title: "[兼容性] "
+labels: ["app-compat"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        这是本项目最重要的数据来源。不同程序的上屏文本可读性差别极大
+        （Office 通常很好，浏览器需要开辅助功能，Electron / Qt 程序可能完全读不到）。
+        你的上报会直接进 `docs/app-matrix.md`。
+  - type: input
+    id: app
+    attributes:
+      label: 应用名称与版本
+      placeholder: 微信 4.0.6 / VS Code 1.96 / WPS 12.1
+    validations:
+      required: true
+  - type: dropdown
+    id: symptom
+    attributes:
+      label: 现象
+      description: 挑最接近的一项
+      options:
+        - 击键能采集到，但上屏文本拿不到
+        - 击键和上屏文本都拿不到
+        - 上屏文本能拿到，但有重复或缺失字符
+        - 拼音击键与上屏文字对不上（关联错误）
+        - 其他（在下面补充）
+    validations:
+      required: true
+  - type: input
+    id: ime
+    attributes:
+      label: 输入法
+      placeholder: 微软拼音 / 搜狗输入法 / 微信输入法
+    validations:
+      required: true
+  - type: textarea
+    id: detail
+    attributes:
+      label: 补充说明
+      description: 打一句中文时的实际情况，越具体越好
+      placeholder: 例如：输入「你好」，日志里只有 n i h a o 五个 kd/ku，没有 commit 事件。
+    validations:
+      required: false

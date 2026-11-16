@@ -1,0 +1,27 @@
+name: 功能建议
+description: 想要的能力、想接入的工具
+title: "[建议] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你想解决什么问题
+      description: 先说场景，再说方案。只说方案的话，别人很难判断该不该做。
+      placeholder: 例如：我每天在终端里打代码，但统计里看不出「符号键」和「字母键」的区别，所以不知道是语法不熟还是手慢。
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 你设想怎么做
+      description: 有想法就写，没有也行
+    validations:
+      required: false
+  - type: textarea
+    id: alternative
+    attributes:
+      label: 有没有别的做法
+      description: 现成工具能解决的话，说说你看过哪些
+    validations:
+      required: false

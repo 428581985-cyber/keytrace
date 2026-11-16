@@ -1,0 +1,51 @@
+name: Bug 报告
+description: 功能异常、崩溃、统计结果不对
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请把「现象」和「复现步骤」写清楚，这两项决定这个问题能不能被修。
+        提交前请先删掉日志里的个人信息（聊天内容、密码、姓名）。
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 现象
+      description: 实际发生了什么？你期望发生什么？
+      placeholder: 例如：运行 `keytrace collect` 之后报告「未捕获到任何事件」，但键盘工作正常。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 打开 ...
+        2. 按 ... 键
+        3. 看到 ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: "`keytrace --version` 的输出，或 commit hash"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 环境
+      description: Windows 版本 + 输入法 + 出现问题的应用
+      placeholder: Windows 11 24H2 / 微软拼音 / Chrome 142
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志
+      description: 不要贴完整日志文件，只贴相关片段
+      render: text
+    validations:
+      required: false
