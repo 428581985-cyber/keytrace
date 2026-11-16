@@ -20,6 +20,12 @@ namespace KeyTrace.Collect;
 internal sealed class UiTextSampler : IDisposable
 {
     private const int IntervalMs = 150;
+
+    /// <summary>刚切到新控件时的加密采样间隔，抢在用户打字之前把基线立住。</summary>
+    private const int FastIntervalMs = 50;
+
+    /// <summary>切换后加密采样的持续时间。</summary>
+    private const int FastWindowMs = 800;
     private const int StableMs = 300;
     private const int MaxTextLength = 4000;
     private const int MaxCommitLength = 200;
@@ -45,6 +51,7 @@ internal sealed class UiTextSampler : IDisposable
     private string _pendingText = string.Empty;
     private DateTime _seenAt = DateTime.MinValue;
     private DateTime _pendingSince = DateTime.MinValue;
+    private DateTime _fastUntil = DateTime.MinValue;
     private AutomationElement? _cachedElement;
     private int _cachedPid = -1;
 
@@ -84,7 +91,7 @@ internal sealed class UiTextSampler : IDisposable
 
         while (!_stop)
         {
-            Thread.Sleep(IntervalMs);
+            Thread.Sleep(DateTime.UtcNow < _fastUntil ? FastIntervalMs : IntervalMs);
 
             if (_isPaused())
             {
@@ -159,6 +166,7 @@ internal sealed class UiTextSampler : IDisposable
             _cachedPid = -1;
             // 换控件/换应用：直接立基线，不把整篇已有内容当成一次输入
             Trace($"baseline {exe} pid={pid} len={text.Length}");
+            _fastUntil = DateTime.UtcNow.AddMilliseconds(FastWindowMs);
             _lastPid = pid;
             _seenText = text;
             _confirmedText = text;
