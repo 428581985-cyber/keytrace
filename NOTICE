@@ -1,0 +1,57 @@
+KeyTrace 使用的第三方数据与思路
+==============================
+
+本文件不是许可证，只是署名与来源说明。各组件的完整许可条文见其各自仓库。
+
+
+数据
+----
+
+汉字拼音
+  文件    : 派生自 kMandarin_8105.txt（《通用规范汉字表》8105 字最常用读音）
+  许可    : MIT
+  版权人  : mozillazg 及贡献者
+  来源    : https://github.com/mozillazg/pinyin-data
+  说明    : 原始数据取自 Unicode Unihan Database 与汉典网，其中源自 Unihan 的部分
+            适用 Unicode 许可。本项目只使用其派生出的"字 → 音节"映射。
+
+单字词频
+  文件    : 派生自 dict.txt
+  许可    : MIT
+  版权人  : fxsjy 及贡献者
+  来源    : https://github.com/fxsjy/jieba
+  说明    : 只提取其中的单字词频，用于给练习字排序。
+
+生成产物：data/zh-hanzi.tsv（7258 字，字 + 音节 + 词频 + 小鹤双拼码）
+生成脚本：tools/gen_zh_data.py
+
+
+规则与思路（未复制代码）
+----------------------
+
+小鹤双拼编码规则
+  来源    : https://flypy.cc/help  （官网「零声母」一节）
+  说明    : 按文字规则重新实现，未复制任何实现代码。键位表与零声母规则属客观事实。
+
+Inputlog / 写作过程研究
+  来源    : Leijten & Van Waes, Inputlog；Lindgren & Sullivan (2006) 修订分类学
+  用途    : "停顿门槛 = 个人 IKI 中位数 × 系数"的判定方式；pre-contextual /
+            contextual 修订的区分思路。
+  说明    : 只借鉴方法与定义，未使用其代码。
+
+keybr
+  来源    : https://keybr.com （AGPL-3.0）、https://github.com/y0sif/keybr-tui （MIT）
+  用途    : 逐键置信度（错误优先、速度次之、样本不足不排名）的评分思路；
+            每批混入约 20% 已掌握键的配比做法；typing-data.json 的字段格式。
+  说明    : 未复制其代码。导出格式是公开的数据接口，不含其实现。
+
+Wobbrock & Myers (2006)
+  用途    : 字符级错误分析（按编辑距离对齐目标文本）的标准做法，记为后续
+            "抄写任务标定"的方法来源。
+
+
+被借鉴但没有引入代码的项目
+-------------------------
+
+keylogger 类项目（KeyStroke Monitor 等）
+  用途    : 只用于对照"退格占比 8–25% 属人类正常范围"这一区间，未使用其代码。

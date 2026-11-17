@@ -19,4 +19,10 @@
     <InternalsVisibleTo Include="KeyTrace.Tests" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- 中文练习材料要用的字表（7258 字：音节 + 词频 + 小鹤双拼码）。
+         编进程序集而不是放旁边当文件：publish 成单文件时不用管路径。 -->
+    <EmbeddedResource Include="..\..\data\zh-hanzi.tsv" LogicalName="KeyTrace.data.zh-hanzi.tsv" />
+  </ItemGroup>
+
 </Project>

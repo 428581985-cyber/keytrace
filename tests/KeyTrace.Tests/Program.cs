@@ -25,6 +25,8 @@ internal static class Program
         WeakScoreTests();
         LabelExportTests();
         KeybrExportTests();
+        ShuangpinTests();
+        ZhSelectionTests();
 
         Console.WriteLine();
         Console.WriteLine($"通过 {_passed}，失败 {_failed}");
@@ -312,6 +314,59 @@ internal static class Program
         AttributionResult empty = new();
         days = [(new DateOnly(2026, 11, 16), empty)];
         Eq("没有击键的天不导出", "[]", KeybrExport.Build(days).Replace(" ", "").Replace("\n", "").Replace("\r", ""));
+    }
+
+    private static void ShuangpinTests()
+    {
+        Section("小鹤双拼");
+
+        // 官网「编码示例」里的那几组，逐个对
+        Eq("双 shuang = u + l", "ul", ShuangpinCode.Of("shuang") ?? "");
+        Eq("拼 pin = p + b", "pb", ShuangpinCode.Of("pin") ?? "");
+        Eq("学 xue = x + t", "xt", ShuangpinCode.Of("xue") ?? "");
+        Eq("中 zhong = v + s", "vs", ShuangpinCode.Of("zhong") ?? "");
+        Eq("文 wen = w + f", "wf", ShuangpinCode.Of("wen") ?? "");
+        Eq("位 wei = w + w", "ww", ShuangpinCode.Of("wei") ?? "");
+        Eq("卷 juan = j + r", "jr", ShuangpinCode.Of("juan") ?? "");
+        Eq("云 yun = y + y", "yy", ShuangpinCode.Of("yun") ?? "");
+
+        // 零声母：单字母双写、双字母照全拼、三字母首字母+韵母键
+        Eq("啊 a = aa", "aa", ShuangpinCode.Of("a") ?? "");
+        Eq("爱 ai 照全拼", "ai", ShuangpinCode.Of("ai") ?? "");
+        Eq("恩 en 照全拼", "en", ShuangpinCode.Of("en") ?? "");
+        Eq("昂 ang = a + h", "ah", ShuangpinCode.Of("ang") ?? "");
+        Eq("而 er 照全拼", "er", ShuangpinCode.Of("er") ?? "");
+
+        Eq("去声调：lǜ -> lv", "lv", ShuangpinCode.StripTone("lǜ"));
+        Eq("去声调：nǚ -> nv", "nv", ShuangpinCode.StripTone("nǚ"));
+        Eq("去声调：zhōng -> zhong", "zhong", ShuangpinCode.StripTone("zhōng"));
+        True("不认识的音节返回 null", ShuangpinCode.Of("zhuangq") is null);
+    }
+
+    private static void ZhSelectionTests()
+    {
+        Section("中文选字");
+
+        True("内置字表已加载", HanziTable.All.Count > 3000);
+
+        // 表里的码必须和 ShuangpinCode 现算的一致，否则说明生成脚本和代码口径漂了
+        int mismatch = HanziTable.All.Count(e => ShuangpinCode.Of(e.Syllable) != e.Code);
+        Eq("字表里的码与现算一致", "0", mismatch.ToString());
+
+        HashSet<char> weak = ['c'];
+        System.Collections.Generic.List<HanziEntry> picked = ZhSelector.Pick(weak, 40);
+        Eq("生成指定数量", "40", picked.Count.ToString());
+        True("大部分字含弱键", picked.Count(e => e.Code.Contains('c')) >= 30);
+        Eq("不含弱键的约两成", "8", picked.Count(e => !e.Code.Contains('c')).ToString());
+
+        // 命中两个弱键的应该排在只命中一个的前面
+        HashSet<char> two = ['c', 'h'];
+        System.Collections.Generic.List<HanziEntry> both = ZhSelector.Pick(two, 20);
+        int twoHits = both.Count(e => e.Code.Count(two.Contains) == 2);
+        True("有两个弱键的字排前面", twoHits > 0 && both[0].Code.Count(two.Contains) == 2);
+
+        True("空弱键不出字", ZhSelector.Pick(new HashSet<char>(), 10).Count == 0);
+        True("数量为 0 不出字", ZhSelector.Pick(weak, 0).Count == 0);
     }
 
     private static TypoRecord Rec(string kind, long ts) => new()

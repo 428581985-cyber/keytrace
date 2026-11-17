@@ -60,6 +60,9 @@ internal static class Program
             case "export":
                 return ExportData(args[1..]);
 
+            case "words":
+                return BuildWords(args[1..]);
+
             default:
                 Console.Error.WriteLine($"未知命令：{args[0]}");
                 Console.Error.WriteLine("运行 keytrace --help 查看可用命令。");
@@ -93,6 +96,7 @@ internal static class Program
               stats      把 events.jsonl 归因成 stats.json 与 typos.jsonl
               label      导出金标标注表，人工打勾后用来校准判定规则
               export     把统计翻译成别人的格式（目前支持 keybr）
+              words      按弱键生成中文练习串
               pause      暂停录制（等同托盘菜单 / Ctrl+Alt+P）
               resume     继续录制
               stop       让常驻进程退出
@@ -119,6 +123,11 @@ internal static class Program
             export 专用：
               --format <名字>    目标格式，目前只有 keybr
               --out <文件>       默认 %USERPROFILE%\.keytrace\typing-data.json
+
+            words 专用：
+              --weak <字母>      弱键，逗号分隔，如 c,v,f；不给就从 stats.json 取前五
+              --count <n>        生成多少个字，默认 40
+              --out <文件>       默认 %USERPROFILE%\.keytrace\weak-zh.txt
 
             全部数据只存本地，不联网。
             """);
@@ -440,6 +449,137 @@ internal static class Program
         Console.WriteLine("（会先备份本地统计；加 --force 才覆盖）");
 
         return 0;
+    }
+
+    /// <summary>按弱键生成中文练习串：中文只能靠"字的双拼码里有哪个键"来筛，不能像英文那样按字母筛词。</summary>
+    private static int BuildWords(string[] args)
+    {
+        ConsoleBridge.Attach();
+
+        string lang = Value(args, "--lang") ?? "zh";
+        if (lang != "zh")
+        {
+            Console.Error.WriteLine("目前只支持中文（--lang zh）。英文交给 keybr 导出，符号还没做。");
+            return 1;
+        }
+
+        int count = 40;
+        if (Value(args, "--count") is string countText && (!int.TryParse(countText, out count) || count < 1))
+        {
+            Console.Error.WriteLine("--count 需要正整数。");
+            return 1;
+        }
+
+        List<char> weak;
+        string source;
+        if (Value(args, "--weak") is string spec)
+        {
+            weak = [.. spec.ToLowerInvariant().Where(c => c is >= 'a' and <= 'z').Distinct()];
+            source = "命令行指定";
+        }
+        else
+        {
+            weak = WeakKeysFromStats(out string note);
+            source = note;
+        }
+
+        if (weak.Count == 0)
+        {
+            Console.Error.WriteLine("没有弱键可用：先跑 keytrace stats 攒够数据，或者用 --weak c,v 手动指定。");
+            return 1;
+        }
+
+        HashSet<char> weakSet = [.. weak];
+        List<HanziEntry> picked = ZhSelector.Pick(weakSet, count);
+        if (picked.Count == 0)
+        {
+            Console.Error.WriteLine("字表是空的——data/zh-hanzi.tsv 可能没被打进程序集。");
+            return 1;
+        }
+
+        string output = Value(args, "--out") ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".keytrace",
+            "weak-zh.txt");
+
+        // 一行 10 个字：粘进 keybr 的自定义文本或 monkeytype 就是一段练习
+        List<string> lines = [];
+        for (int i = 0; i < picked.Count; i += 10)
+        {
+            lines.Add(string.Join(' ', picked.Skip(i).Take(10).Select(p => p.Char)));
+        }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(output))!);
+        File.WriteAllLines(output, lines, new System.Text.UTF8Encoding(false));
+
+        Dictionary<char, int> coverage = ZhSelector.Coverage(picked);
+        Console.WriteLine($"弱键 {string.Join(' ', weak.Select(char.ToUpperInvariant))}（{source}）→ {picked.Count} 字");
+        Console.WriteLine();
+        foreach (string line in lines)
+        {
+            Console.WriteLine(line);
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("覆盖：" + string.Join("  ",
+            weak.Select(w => $"{char.ToUpperInvariant(w)}×{coverage.GetValueOrDefault(w)}")));
+        Console.WriteLine($"混入 {picked.Count - picked.Count(p => p.Code.Any(weakSet.Contains))} 个已掌握键的字（约 {ZhSelector.KnownMix:P0}），避免偏科");
+        Console.WriteLine();
+        Console.WriteLine($"→ {output}");
+        Console.WriteLine();
+        Console.WriteLine("对照表（字：音节 = 双拼两键）：");
+        foreach (HanziEntry e in picked.Take(6))
+        {
+            Console.WriteLine($"  {e.Char}：{e.Syllable} = {e.Code[0]} + {e.Code[1]}");
+        }
+
+        return 0;
+    }
+
+    /// <summary>从 stats.json 取最弱的五个字母键。符号键不进——中文练习只认 a–z。</summary>
+    private static List<char> WeakKeysFromStats(out string note)
+    {
+        string path = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".keytrace",
+            "stats.json");
+
+        note = "手动指定";
+        if (!File.Exists(path))
+        {
+            return [];
+        }
+
+        try
+        {
+            using FileStream file = File.OpenRead(path);
+            using System.Text.Json.JsonDocument doc = System.Text.Json.JsonDocument.Parse(file);
+
+            List<(string Name, double Score)> ranked = [];
+            foreach (System.Text.Json.JsonElement key in doc.RootElement.GetProperty("keys").EnumerateArray())
+            {
+                System.Text.Json.JsonElement score = key.GetProperty("weakScore");
+                if (score.ValueKind != System.Text.Json.JsonValueKind.Number)
+                {
+                    continue;
+                }
+
+                string name = key.GetProperty("name").GetString() ?? "";
+                if (name.Length == 1 && name[0] is >= 'A' and <= 'Z')
+                {
+                    ranked.Add((name, score.GetDouble()));
+                }
+            }
+
+            ranked.Sort((a, b) => b.Score.CompareTo(a.Score));
+            List<char> weak = [.. ranked.Take(5).Select(r => char.ToLowerInvariant(r.Name[0]))];
+            note = $"来自 stats.json 前 {weak.Count} 名";
+            return weak;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return [];
+        }
     }
 
     private static DateOnly DayOf(EventRecord e) =>
