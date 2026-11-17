@@ -57,6 +57,9 @@ internal sealed class RawInputCollector : IDisposable
     /// <summary>上一次上屏之后按了多少下键。用来识别"没有击键的文本变化"（粘贴、拖拽）。</summary>
     private int _keysSinceCommit;
 
+    /// <summary>计数所属的会话。换会话要把计数清零，否则会串到别的应用上。</summary>
+    private string _keysSid = string.Empty;
+
     /// <summary>上一次写 meta 的日期。跨天要补一条，否则新文件不知道自己是什么输入法方案。</summary>
     private DateOnly _metaDay;
     private bool _hotkeyRegistered;
@@ -355,7 +358,13 @@ internal sealed class RawInputCollector : IDisposable
 
         _writer.Write(ev.ToJsonLine(), today);
         EventCount++;
-        _keysSinceCommit = 0;
+
+        // 只有真正的上屏才结算击键数。comp 和 commit 是同一批按键的两个面，
+        // 在 comp 上清零会让紧随其后的 commit 的 keys 变成 0，被误判成粘贴。
+        if (eventName == "commit")
+        {
+            _keysSinceCommit = 0;
+        }
     }
 
     private void Record(NativeMethods.RAWKEYBOARD kb)
@@ -386,6 +395,14 @@ internal sealed class RawInputCollector : IDisposable
         }
 
         string sid = _sessions.Observe(exe, mono, today);
+
+        // 换会话（换应用 / 空闲超过 5 秒）就把击键计数清零。
+        // 否则在别的程序里打的字会被算到这次上屏头上，keys 就没有意义了。
+        if (sid != _keysSid)
+        {
+            _keysSid = sid;
+            _keysSinceCommit = 0;
+        }
 
         KeyEvent ev = new()
         {

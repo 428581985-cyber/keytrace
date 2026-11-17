@@ -199,10 +199,12 @@ internal sealed class UiTextSampler : IDisposable
 
         if (ContainsNonAscii(added))
         {
-            // 出现汉字（或中文标点）：之前挂着的拼音说明被替换掉了，直接丢掉
-            if (_pendingSince != DateTime.MinValue)
+            // 出现汉字（或中文标点）：之前挂着的那段是拼音，被替换掉了。
+            // 但它不能直接丢——韵母键按错这类拼音层错误只能从这里看出来，
+            // 归因层要用。记成 comp 保留下来，commit 仍然是干净的。
+            if (_pendingSince != DateTime.MinValue && _pendingText.Length > 0)
             {
-                Trace($"drop held [{_pendingText}]");
+                _onCommit(_pendingText, exe, pid, "comp");
             }
 
             _confirmedText = text;
@@ -272,6 +274,26 @@ internal sealed class UiTextSampler : IDisposable
             Trace($"found text element in {NameOf(pid)}");
             _cachedElement = found;
             _cachedPid = pid;
+        }
+        else if (TraceEnabled)
+        {
+            // 找不到时说清楚卡在哪：焦点控件是什么、它有几个子节点。
+            // 没有这几行只能猜是"对方不暴露"还是"我们搜错地方"。
+            string ct;
+            int children;
+            try
+            {
+                ct = focused.Current.ControlType?.ProgrammaticName ?? "?";
+                AutomationElement? first = TreeWalker.ControlViewWalker.GetFirstChild(focused);
+                children = first is null ? -1 : 1;
+            }
+            catch (Exception ex)
+            {
+                ct = "throw:" + ex.GetType().Name;
+                children = -1;
+            }
+
+            Trace($"search miss: ctype={ct} childPresent={children} exe={NameOf(pid)}");
         }
 
         return found;
