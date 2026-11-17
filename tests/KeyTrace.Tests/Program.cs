@@ -24,6 +24,7 @@ internal static class Program
         AttributionTests();
         WeakScoreTests();
         LabelExportTests();
+        KeybrExportTests();
 
         Console.WriteLine();
         Console.WriteLine($"通过 {_passed}，失败 {_failed}");
@@ -267,6 +268,50 @@ internal static class Program
 
         Eq("换行可见化", "a\\nb", LabelExporter.Visible("a\nb"));
         Eq("空格可见化", "a·b", LabelExporter.Visible("a b"));
+    }
+
+    private static void KeybrExportTests()
+    {
+        Section("keybr 导出");
+
+        AttributionResult day = new();
+        KeyStat a = new() { Vk = 65, Presses = 100, Typos = 5 };
+        a.Iki.AddRange([200, 300, 400]);
+        KeyStat semicolon = new() { Vk = 186, Presses = 40, Typos = 9 };
+        semicolon.Iki.AddRange([100]);
+        KeyStat digit = new() { Vk = 50, Presses = 30, Typos = 2 };
+        digit.Iki.AddRange([150, 250]);
+        day.Keys[65] = a;
+        day.Keys[186] = semicolon;
+        day.Keys[50] = digit;
+        day.Totals.TextActiveMs = 60000;
+
+        System.Collections.Generic.List<(DateOnly, AttributionResult)> days = [(new DateOnly(2026, 11, 17), day)];
+        string json = KeybrExport.Build(days);
+
+        using System.Text.Json.JsonDocument doc = System.Text.Json.JsonDocument.Parse(json);
+        System.Text.Json.JsonElement root = doc.RootElement;
+        Eq("顶层是数组", "Array", root.ValueKind.ToString());
+        Eq("一天一个 session", "1", root.GetArrayLength().ToString());
+
+        System.Text.Json.JsonElement s = root[0];
+        Eq("layout 固定 en-us", "en-us", s.GetProperty("layout").GetString() ?? "");
+        Eq("length = 字母数字击键数", "130", s.GetProperty("length").ToString());
+        Eq("errors = 确认错误数", "7", s.GetProperty("errors").ToString());
+        Eq("speed 按 字符/分钟", "130", s.GetProperty("speed").GetDouble().ToString("0"));
+
+        System.Text.Json.JsonElement hist = s.GetProperty("histogram");
+        Eq("符号键不进 histogram", "2", hist.GetArrayLength().ToString());
+        Eq("按码位排序：数字在前", "50", hist[0].GetProperty("codePoint").ToString());
+        Eq("数字的 timeToType 取中位数", "200", hist[0].GetProperty("timeToType").ToString());
+        Eq("A 的 codePoint 是小写 a", "97", hist[1].GetProperty("codePoint").ToString());
+        Eq("hitCount 取按下次数", "100", hist[1].GetProperty("hitCount").ToString());
+        Eq("missCount 取确认错误", "5", hist[1].GetProperty("missCount").ToString());
+        Eq("timeToType 取中位数", "300", hist[1].GetProperty("timeToType").ToString());
+
+        AttributionResult empty = new();
+        days = [(new DateOnly(2026, 11, 16), empty)];
+        Eq("没有击键的天不导出", "[]", KeybrExport.Build(days).Replace(" ", "").Replace("\n", "").Replace("\r", ""));
     }
 
     private static TypoRecord Rec(string kind, long ts) => new()

@@ -20,6 +20,7 @@ keytrace stop
 keytrace stats                  # 最近 7 天 → ~/.keytrace/stats.json + typos.jsonl
 keytrace stats --since all      # 全部历史
 keytrace label                  # 导出人工标注表，用来校准"什么算打错"
+keytrace export --format keybr   # 导出成 keybr-tui 能导入的格式
 ```
 
 事件写在 `%USERPROFILE%\.keytrace\events\`，一行一个 JSON，格式见 [docs/event-schema.md](docs/event-schema.md)。

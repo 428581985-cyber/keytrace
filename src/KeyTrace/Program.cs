@@ -57,6 +57,9 @@ internal static class Program
             case "label":
                 return ExportLabels(args[1..]);
 
+            case "export":
+                return ExportData(args[1..]);
+
             default:
                 Console.Error.WriteLine($"未知命令：{args[0]}");
                 Console.Error.WriteLine("运行 keytrace --help 查看可用命令。");
@@ -89,6 +92,7 @@ internal static class Program
               collect    前台录制，调试用，Ctrl+C 结束
               stats      把 events.jsonl 归因成 stats.json 与 typos.jsonl
               label      导出金标标注表，人工打勾后用来校准判定规则
+              export     把统计翻译成别人的格式（目前支持 keybr）
               pause      暂停录制（等同托盘菜单 / Ctrl+Alt+P）
               resume     继续录制
               stop       让常驻进程退出
@@ -111,6 +115,10 @@ internal static class Program
               --total <n>        共导出多少条，默认 200
               --seed <n>         抽样种子，默认 20261117（同种子导两次结果一样）
               --anonymize        去掉文字、应用、时间，只留结构特征（准备公开时用）
+
+            export 专用：
+              --format <名字>    目标格式，目前只有 keybr
+              --out <文件>       默认 %USERPROFILE%\.keytrace\typing-data.json
 
             全部数据只存本地，不联网。
             """);
@@ -371,6 +379,71 @@ internal static class Program
 
         return 0;
     }
+
+    /// <summary>导出成 keybr-tui 能导入的格式：一天一个 session，逐键 hit/miss/耗时。</summary>
+    private static int ExportData(string[] args)
+    {
+        ConsoleBridge.Attach();
+
+        string format = Value(args, "--format") ?? "keybr";
+        if (format != "keybr")
+        {
+            Console.Error.WriteLine($"不认识的格式：{format}。目前只支持 keybr。");
+            return 1;
+        }
+
+        string directory = Value(args, "--in") ?? DefaultDataDirectory();
+        DateOnly today = DateOnly.FromDateTime(DateTime.Now);
+
+        if (!TryParseSince(Value(args, "--since") ?? "7d", today, out DateOnly? since))
+        {
+            Console.Error.WriteLine("--since 只接受 7d、all 或 2026-11-01 这样的日期。");
+            return 1;
+        }
+
+        string output = Value(args, "--out") ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".keytrace",
+            "typing-data.json");
+
+        (List<string> files, IEnumerable<EventRecord> stream, int rejected) = EventLog.Read(directory, since, today);
+        List<EventRecord> events = [.. stream];
+        if (events.Count == 0)
+        {
+            Console.Error.WriteLine($"没有可读的事件：{directory}");
+            return 1;
+        }
+
+        // 一天一个 session：keybr 的一次练习就是这么定义的，把两个月合成一个 session
+        // 会让"这一课练完的进步"完全看不出来。
+        List<(DateOnly Day, AttributionResult Result)> days = [];
+        foreach (IGrouping<DateOnly, EventRecord> group in events.GroupBy(DayOf))
+        {
+            days.Add((group.Key, new Attributor().Run([.. group], rejected)));
+        }
+
+        days.Sort((a, b) => a.Day.CompareTo(b.Day));
+
+        string json = KeybrExport.Build(days);
+        KeybrExport.Write(output, json);
+
+        int sessions = days.Count(d => KeybrExport.KeysOf(d.Result).Count > 0);
+        int keys = days.SelectMany(d => KeybrExport.KeysOf(d.Result)).Select(k => k.CodePoint).Distinct().Count();
+
+        Console.WriteLine($"事件 {events.Count} 条（{files.Count} 个文件），{days.Count} 天");
+        Console.WriteLine($"导出 {sessions} 个 session，覆盖 {keys} 个字母/数字键");
+        Console.WriteLine();
+        Console.WriteLine($"→ {output}");
+        Console.WriteLine();
+        Console.WriteLine("导入 keybr-tui：");
+        Console.WriteLine($"  keybr-tui --import \"{output}\"");
+        Console.WriteLine("（会先备份本地统计；加 --force 才覆盖）");
+
+        return 0;
+    }
+
+    private static DateOnly DayOf(EventRecord e) =>
+        DateOnly.FromDateTime(DateTimeOffset.FromUnixTimeMilliseconds(e.Ts).ToLocalTime().Date);
 
     private static string CompCoverage(AttributionResult r) =>
         r.Chinese.Commits == 0
