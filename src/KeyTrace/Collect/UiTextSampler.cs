@@ -55,6 +55,10 @@ internal sealed class UiTextSampler : IDisposable
     private AutomationElement? _cachedElement;
     private int _cachedPid = -1;
 
+    /// <summary>连续搜索失败次数，用于退避。读不到文字的程序不该被每 150ms 全树扫一遍。</summary>
+    private int _missCount;
+    private DateTime _retryAfter = DateTime.MinValue;
+
     public UiTextSampler(
         Action<string, string, int, string> onCommit,
         Func<bool> isPaused,
@@ -164,6 +168,8 @@ internal sealed class UiTextSampler : IDisposable
         {
             _cachedElement = null;
             _cachedPid = -1;
+            _missCount = 0;
+            _retryAfter = DateTime.MinValue;
             // 换控件/换应用：直接立基线，不把整篇已有内容当成一次输入
             Trace($"baseline {exe} pid={pid} len={text.Length}");
             _fastUntil = DateTime.UtcNow.AddMilliseconds(FastWindowMs);
@@ -268,12 +274,22 @@ internal sealed class UiTextSampler : IDisposable
             }
         }
 
+        // 上一个进程里搜不到，就别每轮都全树遍历了。
+        // WorkBuddy、微信这类不暴露文字的程序，遍历一次是 300 个 UIA 节点，
+        // 每个节点都是 COM 对象——每 150ms 走一遍，内存一天能涨到几个 GB。
+        if (DateTime.UtcNow < _retryAfter)
+        {
+            return null;
+        }
+
         AutomationElement? found = SearchForTextElement(focused);
         if (found is not null)
         {
             Trace($"found text element in {NameOf(pid)}");
             _cachedElement = found;
             _cachedPid = pid;
+            _missCount = 0;
+            _retryAfter = DateTime.MinValue;
         }
         else if (TraceEnabled)
         {
@@ -294,6 +310,15 @@ internal sealed class UiTextSampler : IDisposable
             }
 
             Trace($"search miss: ctype={ct} childPresent={children} exe={NameOf(pid)}");
+        }
+
+        if (found is null)
+        {
+            // 退避：500ms 起，每次翻倍，上限 10s。读得到文字的程序第一次就成功，
+            // 走不到这里；只有真的读不到的才会被压到 10 秒一次。
+            _missCount++;
+            int delayMs = Math.Min(500 << Math.Min(_missCount - 1, 5), 10_000);
+            _retryAfter = DateTime.UtcNow.AddMilliseconds(delayMs);
         }
 
         return found;
