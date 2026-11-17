@@ -66,8 +66,10 @@ internal static class StatsBuilder
         w.WriteNumber("shortcut", r.Skipped.Shortcut);
         w.WriteNumber("hotkey", r.Skipped.Hotkey);
         w.WriteNumber("glyph", r.Skipped.Glyph);
+        w.WriteNumber("bulkCommits", r.Skipped.BulkCommits);
+        w.WriteNumber("bulkChars", r.Skipped.BulkChars);
         w.WriteNumber("synthetic", r.Skipped.Synthetic);
-        w.WriteNumber("emptyBackspace", r.Skipped.EmptyBackspace);
+
         w.WriteNumber("deleteKey", r.Skipped.DeleteKey);
         w.WriteNumber("unparsable", r.Skipped.Unparsable);
         w.WriteEndObject();
@@ -103,6 +105,7 @@ internal static class StatsBuilder
         w.WriteNumber("ikiSdMs", Round(b.GlobalSd, 1));
         w.WriteNumber("pauseThresholdMs", Round(b.GlobalP50 * b.PauseFactor, 1));
         w.WriteNumber("activeMs", r.Totals.ActiveMs);
+        w.WriteNumber("textActiveMs", r.Totals.TextActiveMs);
         w.WriteNumber("cpm", Round(Cpm(r), 1));
         w.WriteNumber("typoRate", Round(Rate(r.Totals.Typos, r.Totals.Keystrokes), 4));
         w.WriteEndObject();
@@ -115,12 +118,14 @@ internal static class StatsBuilder
         w.WriteNumber("chars", r.Totals.Chars);
         w.WriteNumber("commits", r.Totals.Commits);
         w.WriteNumber("sessions", r.Totals.Sessions);
+        w.WriteNumber("sessionsText", r.Totals.SessionsText);
         w.WriteNumber("backspaces", r.Totals.Backspaces);
         w.WriteNumber("typos", r.Totals.Typos);
         w.WriteNumber("pinyinErrors", r.Totals.PinyinErrors);
         w.WriteNumber("selectionErrors", r.Totals.SelectionErrors);
         w.WriteNumber("rewording", r.Totals.Rewording);
         w.WriteNumber("collateral", r.Totals.Collateral);
+        w.WriteNumber("blindDeletions", r.Totals.BlindDeletions);
         w.WriteEndObject();
     }
 
@@ -219,6 +224,9 @@ internal static class StatsBuilder
         w.WriteEndObject();
         w.WriteStartObject("rewording");
         w.WriteNumber("longPause", r.Totals.RewordingLongPause);
+        w.WriteNumber("longRun", r.Totals.RewordingLongRun);
+        w.WriteNumber("earlierText", r.Totals.RewordingEarlierText);
+        w.WriteNumber("sameCharRetype", r.Totals.RewordingSameChar);
         w.WriteEndObject();
         w.WriteEndObject();
     }
@@ -267,7 +275,7 @@ internal static class StatsBuilder
             w.WriteNumber("chars", a.Chars);
             w.WriteBoolean("textAvailable", a.TextAvailable);
             w.WriteNumber("typos", a.Typos);
-            w.WriteNumber("backspacePer100", Round(a.Chars > 0 ? a.Backspaces * 100.0 / a.Chars : 0, 1));
+            w.WriteNumber("backspacesPer100Keys", Round(a.Keystrokes > 0 ? a.Backspaces * 100.0 / a.Keystrokes : 0, 1));
             w.WriteEndObject();
         }
 
@@ -295,6 +303,7 @@ internal static class StatsBuilder
             sb.Append(",\"cause\":").Append(Q(t.Cause));
             sb.Append(",\"confidence\":").Append(t.Confidence.ToString("0.00", CultureInfo.InvariantCulture));
             sb.Append(",\"word\":").Append(Q(t.Word));
+            sb.Append(",\"wordAfter\":").Append(Q(t.WordAfter));
             sb.Append(",\"pos\":").Append(t.Position.ToString(CultureInfo.InvariantCulture));
             sb.Append('}');
             file.WriteLine(sb.ToString());
@@ -306,7 +315,7 @@ internal static class StatsBuilder
     private static double Rate(int part, int total) => total <= 0 ? 0 : (double)part / total;
 
     private static double Cpm(AttributionResult r) =>
-        r.Totals.ActiveMs <= 0 ? 0 : r.Totals.Chars * 60000.0 / r.Totals.ActiveMs;
+        r.Totals.TextActiveMs <= 0 ? 0 : r.Totals.Chars * 60000.0 / r.Totals.TextActiveMs;
 
     private static double Round(double value, int digits) =>
         double.IsNaN(value) || double.IsInfinity(value) ? 0 : Math.Round(value, digits);

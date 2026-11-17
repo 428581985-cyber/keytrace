@@ -47,9 +47,17 @@ internal sealed class Baseline
     public double PauseFactor { get; init; }
     public Dictionary<int, KeyBaseline> Keys { get; init; } = [];
 
-    /// <summary>这个键的停顿门槛；样本不够就用全局中位数。</summary>
-    public double Threshold(int vk) =>
-        PauseFactor * (Keys.TryGetValue(vk, out KeyBaseline? k) && k.Samples > 0 ? k.P50 : GlobalP50);
+    /// <summary>
+    /// 这个键的停顿门槛；样本不够就用全局中位数。
+    /// 上限卡在全局中位数的 2 倍：像 Enter、Tab、分号这种"敲完就停下来想"的键，
+    /// 自己的中位数会被思考时间污染，不设上限等于给它们开天窗。
+    /// </summary>
+    public double Threshold(int vk)
+    {
+        double keyP50 = Keys.TryGetValue(vk, out KeyBaseline? k) && k.Samples > 0 ? k.P50 : GlobalP50;
+        double capped = GlobalP50 > 0 ? Math.Min(keyP50, GlobalP50 * 2) : keyP50;
+        return PauseFactor * capped;
+    }
 }
 
 internal sealed class KeyStat
@@ -91,11 +99,14 @@ internal sealed class SkipCounters
     public int Hotkey { get; set; }
     public int Glyph { get; set; }
     public int Synthetic { get; set; }
-    public int EmptyBackspace { get; set; }
+    /// <summary>一条 commit 里的字符数超过促成它的击键数，说明这段不是手指打出来的。</summary>
+    public int BulkCommits { get; set; }
+
+    public int BulkChars { get; set; }
     public int DeleteKey { get; set; }
     public int Unparsable { get; set; }
 
-    public int Total => Paste + Shortcut + Modifier + Hotkey + Glyph + Synthetic + EmptyBackspace + DeleteKey + Unparsable;
+    public int Total => Paste + Shortcut + Modifier + Hotkey + Glyph + Synthetic + BulkCommits + DeleteKey + Unparsable;
 }
 
 internal sealed class ChineseCounters
@@ -124,7 +135,11 @@ internal sealed class TypoRecord
     public long? Iki { get; init; }
     public string Cause { get; init; } = "ambiguous";
     public double Confidence { get; init; }
+
+    /// <summary>退格之前的那个词，金标标注时靠它判断"这是不是真的打错"。</summary>
     public string Word { get; init; } = "";
+
+    public string WordAfter { get; init; } = "";
     public int Position { get; init; }
 }
 
@@ -132,6 +147,12 @@ internal sealed class Counters
 {
     public int Keystrokes { get; set; }
     public int Chars { get; set; }
+
+    /// <summary>
+    /// 按击键上限折算的字符数：一条 commit 里的字符数超过促成它的击键数，
+    /// 多出来的必然是自动补全、自动闭合括号、接受建议——不是手指打出来的，不能进 CPM。
+    /// </summary>
+
     public int Commits { get; set; }
     public int Sessions { get; set; }
     public int Backspaces { get; set; }
@@ -141,9 +162,20 @@ internal sealed class Counters
     public int RewordingLongPause { get; set; }
     public int RewordingLongRun { get; set; }
     public int Collateral { get; set; }
+    public int RewordingEarlierText { get; set; }
+    public int RewordingSameChar { get; set; }
+
+    /// <summary>发生了退格、但那段应用读不到文字，无法判断对错，只能不计。</summary>
+    public int BlindDeletions { get; set; }
+
     public long ActiveMs { get; set; }
 
-    public int Rewording => RewordingLongPause + RewordingLongRun;
+    /// <summary>真正读得到文字的那些会话的总时长。算 CPM 只能用这个，否则分母里混进了盲区时间。</summary>
+    public long TextActiveMs { get; set; }
+
+    public int SessionsText { get; set; }
+
+    public int Rewording => RewordingLongPause + RewordingLongRun + RewordingEarlierText + RewordingSameChar;
 }
 
 internal sealed class AttributionResult
@@ -157,6 +189,9 @@ internal sealed class AttributionResult
     public Dictionary<string, AppStat> Apps { get; } = [];
     public List<TypoRecord> Records { get; } = [];
     public Dictionary<string, string> Meta { get; } = [];
+
+    /// <summary>读到过文字的会话。读不到文字的会话里，拼音字母和英文单词长得一模一样，不能判错。</summary>
+    public HashSet<string> TextSids { get; } = [];
 }
 
 /// <summary>
@@ -180,6 +215,16 @@ internal sealed class Attributor
 
         AttributionResult result = new() { Baseline = ComputeBaseline(ordered) };
         result.Skipped.Unparsable = unparsable;
+
+        foreach (EventRecord e in ordered)
+        {
+            if (e.Ev == "commit"
+                && e.Keys > 0
+                && !string.IsNullOrEmpty(UiTextSampler.StripPrivateUse(e.Text ?? string.Empty)))
+            {
+                result.TextSids.Add(e.Sid);
+            }
+        }
 
         new Walker(_opt, result).Walk(ordered);
         return result;
@@ -290,6 +335,7 @@ internal sealed class Attributor
         public int RunPos { get; init; }
         public long Mono { get; init; }
         public long Ts { get; init; }
+        public string WordBefore { get; init; } = "";
         public char? Replacement { get; set; }
     }
 
@@ -303,7 +349,9 @@ internal sealed class Attributor
         public string Exe { get; set; } = "";
         public string Sid { get; set; } = "";
 
-        public string Text => new(Slots.Select(s => s.Char).ToArray());
+        public string? FinalText { get; set; }
+
+        public string Text => FinalText ?? new(Slots.Select(s => s.Char).ToArray());
     }
 
     private sealed class Walker
@@ -327,6 +375,7 @@ internal sealed class Attributor
 
         private readonly Dictionary<int, long> _downMono = [];
         private readonly Dictionary<string, (long First, long Last)> _sessionSpan = [];
+        private readonly Dictionary<string, int> _sidChars = [];
 
         public Walker(AttributorOptions opt, AttributionResult result)
         {
@@ -384,9 +433,16 @@ internal sealed class Attributor
             Flush(long.MaxValue);
 
             _r.Totals.Sessions = _sessionSpan.Count;
-            foreach ((long first, long last) in _sessionSpan.Values)
+            foreach ((string sid, (long first, long last)) in _sessionSpan)
             {
-                _r.Totals.ActiveMs += Math.Max(0, last - first);
+                long span = Math.Max(0, last - first);
+                _r.Totals.ActiveMs += span;
+
+                if (_sidChars.TryGetValue(sid, out int chars) && chars > 0)
+                {
+                    _r.Totals.TextActiveMs += span;
+                    _r.Totals.SessionsText++;
+                }
             }
         }
 
@@ -424,9 +480,17 @@ internal sealed class Attributor
 
             if (e.HasCommandModifier)
             {
-                // Ctrl+Alt+P 这类全局热键也会走到这里：没有上屏文本、带命令修饰，
-                // 按事件格式文档的约定直接丢弃。
-                _r.Skipped.Shortcut++;
+                // Ctrl+Alt+P 是采集层自己的暂停热键，撤不回来，只能在这里按
+                // "含 Ctrl+Alt、无上屏文本、间隔极短" 丢掉。
+                if (e.Vk == 80 && (e.Mods & 0b0110) == 0b0110)
+                {
+                    _r.Skipped.Hotkey++;
+                }
+                else
+                {
+                    _r.Skipped.Shortcut++;
+                }
+
                 _previousMono = 0;
                 return;
             }
@@ -437,6 +501,9 @@ internal sealed class Attributor
             {
                 key.Shifted++;
             }
+
+            // 按住时长要在这里登记：自动重复只发 kd，第一次的时间戳才是真的按下时刻
+            _downMono.TryAdd(e.Vk, e.Mono);
 
             AppStat app = AppOf(e.Exe);
             app.Keystrokes++;
@@ -538,7 +605,8 @@ internal sealed class Attributor
                 }
                 else
                 {
-                    _r.Skipped.EmptyBackspace++;
+                    // 缓冲区里没有可删的字母：删的是之前就上屏的内容，属于改措辞
+                    _r.Totals.RewordingEarlierText++;
                 }
 
                 return;
@@ -546,6 +614,7 @@ internal sealed class Attributor
 
             int index = word.Slots.Count - 1;
             Slot popped = word.Slots[index];
+            string wordBefore = new(word.Slots.Select(s => s.Char).ToArray());
             word.Slots.RemoveAt(index);
             word.Deletions.Add(new Deletion
             {
@@ -557,6 +626,7 @@ internal sealed class Attributor
                 RunPos = _runLen,
                 Mono = e.Mono,
                 Ts = e.Ts,
+                WordBefore = wordBefore,
             });
         }
 
@@ -594,7 +664,19 @@ internal sealed class Attributor
             }
 
             int printable = clean.Count(c => !char.IsControl(c));
+
+            // 一个字符至少需要一次击键，汉字要两次。字符数超过击键数，
+            // 只能是自动补全、接受建议、或者编辑器把整篇文本当成了"新输入"。
+            // 这类内容不是手指打出来的，混进来会把 CPM 和错误率一起算歪。
+            if (printable > e.Keys)
+            {
+                _r.Skipped.BulkCommits++;
+                _r.Skipped.BulkChars += printable;
+                return;
+            }
+
             _r.Totals.Chars += printable;
+            _sidChars[e.Sid] = (_sidChars.TryGetValue(e.Sid, out int seen) ? seen : 0) + printable;
             _r.Totals.Commits++;
 
             AppStat app = AppOf(e.Exe);
@@ -632,6 +714,15 @@ internal sealed class Attributor
 
             _compMono = null;
             _lastCjkCommitMono = e.Mono;
+
+            // 拼音字母已经被"用掉"变成汉字了，缓冲区必须清空：
+            // 否则下一次退格会去删 nihc 里的字母，把"选字错"错判成"拼音层错"。
+            if (_open is not null)
+            {
+                _open.FinalText = _open.Text;
+                _open.Slots.Clear();
+            }
+
             CloseWord(e.Mono);
         }
 
@@ -749,8 +840,31 @@ internal sealed class Attributor
                     continue;
                 }
 
-                bool adjacent = d.Replacement is char rep && KeyCatalog.AreAdjacent(d.Char, rep);
+                if (!_r.TextSids.Contains(word.Sid))
+                {
+                    // 这个会话读不到上屏文字：拼音字母和英文单词长得一模一样，
+                    // 判"打错"只能是瞎猜。宁可不算，也不要把假错误喂给弱键排名。
+                    _r.Totals.BlindDeletions++;
+                    continue;
+                }
+
+                bool sameChar = d.Replacement is char same && same == d.Char;
+
+                // 只有"按了一次退格、补上一个相邻键"才算相邻键替换。
+                // 连删两三个字符再重写，是整词推翻重来，位置对得上不代表按键按错。
+                bool adjacent = runLen == 1
+                    && d.Replacement is char rep
+                    && rep != d.Char
+                    && KeyCatalog.AreAdjacent(d.Char, rep);
                 bool isPinyinError = pinyin && IsAsciiLetter(d.Char);
+
+                if (sameChar)
+                {
+                    // 删掉又原样打回来，内容没有任何变化——这不是纠错，
+                    // 多半是手抖双击或输入法重发。算成打错只会污染弱键排名。
+                    _r.Totals.RewordingSameChar++;
+                    continue;
+                }
 
                 if (isPinyinError)
                 {
@@ -782,7 +896,8 @@ internal sealed class Attributor
                     Iki = d.Iki,
                     Cause = adjacent ? "adjacentSubstitution" : "ambiguous",
                     Confidence = adjacent ? 0.9 : runLen == 1 ? 0.6 : 0.5,
-                    Word = finalText,
+                    Word = d.WordBefore,
+                    WordAfter = finalText,
                     Position = d.Index,
                 });
             }

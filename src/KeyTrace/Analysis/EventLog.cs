@@ -173,7 +173,11 @@ internal static class EventLog
             return ReadAll(reader);
         }
 
-        return File.ReadLines(path, System.Text.Encoding.UTF8);
+        // 必须允许写入共享：常驻进程正按追加模式写着当天的文件，
+        // 用 File.ReadLines 会因为共享模式不匹配直接抛 IOException。
+        using FileStream stream = new(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using StreamReader text = new(stream, System.Text.Encoding.UTF8);
+        return ReadAll(text);
     }
 
     private static List<string> ReadAll(StreamReader reader)

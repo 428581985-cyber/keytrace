@@ -164,9 +164,19 @@ internal static class Program
         Eq("没有 comp 的退格算普通 typo", "1", noComp.Totals.Typos.ToString());
         Eq("compCoverage 只统计到 1 条", "0", noComp.Chinese.CommitsWithComp.ToString());
 
-        AttributionResult pasted = Analyze(Commit(3000, "粘贴进来的一段", 0));
+        AttributionResult pasted = Analyze(false, Commit(3000, "粘贴进来的一段", 0));
         Eq("keys 为 0 的 commit 是粘贴", "1", pasted.Skipped.Paste.ToString());
         Eq("粘贴不产生字符统计", "0", pasted.Totals.Chars.ToString());
+
+        AttributionResult bulk = Analyze(false, Commit(3000, new string('a', 200), 2));
+        Eq("字符数超过击键数的上屏是自动补全/整篇插入", "1", bulk.Skipped.BulkCommits.ToString());
+        Eq("批量上屏不计入字数", "0", bulk.Totals.Chars.ToString());
+
+        AttributionResult blind = Analyze(
+            false,
+            Kd(3000, 84), Kd(3200, 72), Kd(3400, 8), Kd(3600, 69));
+        Eq("读不到文字的会话里退格不判打错", "0", blind.Totals.Typos.ToString());
+        Eq("这类退格单独计数", "1", blind.Totals.BlindDeletions.ToString());
 
         AttributionResult glyph = Analyze(Commit(3000, "\uea88", 5));
         Eq("私有区字形被丢弃", "1", glyph.Skipped.Glyph.ToString());
@@ -196,7 +206,9 @@ internal static class Program
         Eq("退格键不参与弱键排名", "0", StatsBuilder.WeakScore(edit, 1.0, 20)!.Value.ToString("0.###"));
     }
 
-    private static AttributionResult Analyze(params EventRecord[] scenario)
+    private static AttributionResult Analyze(params EventRecord[] scenario) => Analyze(true, scenario);
+
+    private static AttributionResult Analyze(bool textVisible, params EventRecord[] scenario)
     {
         System.Collections.Generic.List<EventRecord> events = [];
         for (int i = 0; i < 20; i++)
@@ -209,6 +221,13 @@ internal static class Program
         foreach (EventRecord e in scenario)
         {
             events.Add(e with { Ts = e.Ts + 5000, Mono = e.Mono + 5000 });
+        }
+
+        // 会话里必须有一条读得到文字的 commit，否则整个会话按"盲区"处理，退格一律不判错
+        if (textVisible)
+        {
+            events.Add(new EventRecord(
+                1, 1_700_000_007_900, 7_900, "commit", 0, 0, 0, "a.exe", "s1", "x", "uia", 1));
         }
 
         return new Attributor().Run(events);
