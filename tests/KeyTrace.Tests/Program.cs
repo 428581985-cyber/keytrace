@@ -27,6 +27,7 @@ internal static class Program
         KeybrExportTests();
         ShuangpinTests();
         ZhSelectionTests();
+        DashboardTests();
 
         Console.WriteLine();
         Console.WriteLine($"通过 {_passed}，失败 {_failed}");
@@ -367,6 +368,18 @@ internal static class Program
 
         True("空弱键不出字", ZhSelector.Pick(new HashSet<char>(), 10).Count == 0);
         True("数量为 0 不出字", ZhSelector.Pick(weak, 0).Count == 0);
+    }
+
+    private static void DashboardTests()
+    {
+        Section("看板");
+
+        string html = Dashboard.Build("{\"totals\":{\"typos\":1}}");
+        True("数据被内嵌", html.Contains("\"totals\""));
+        False("占位符已替换", html.Contains("__DATA__"));
+        False("不引用任何外部资源", html.Contains("http://") || html.Contains("https://"));
+        False("没有外链脚本或样式", html.Contains("src=") || html.Contains("@import"));
+        True("中文界面", html.Contains("打字画像"));
     }
 
     private static TypoRecord Rec(string kind, long ts) => new()

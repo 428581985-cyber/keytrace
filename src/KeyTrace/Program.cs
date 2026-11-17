@@ -63,6 +63,9 @@ internal static class Program
             case "words":
                 return BuildWords(args[1..]);
 
+            case "dashboard":
+                return BuildDashboard(args[1..]);
+
             default:
                 Console.Error.WriteLine($"未知命令：{args[0]}");
                 Console.Error.WriteLine("运行 keytrace --help 查看可用命令。");
@@ -97,6 +100,7 @@ internal static class Program
               label      导出金标标注表，人工打勾后用来校准判定规则
               export     把统计翻译成别人的格式（目前支持 keybr）
               words      按弱键生成中文练习串
+              dashboard  生成单文件 HTML 看板，双击就开
               pause      暂停录制（等同托盘菜单 / Ctrl+Alt+P）
               resume     继续录制
               stop       让常驻进程退出
@@ -128,6 +132,10 @@ internal static class Program
               --weak <字母>      弱键，逗号分隔，如 c,v,f；不给就从 stats.json 取前五
               --count <n>        生成多少个字，默认 40
               --out <文件>       默认 %USERPROFILE%\.keytrace\weak-zh.txt
+
+            dashboard 专用：
+              --stats <文件>     读哪个统计，默认 %USERPROFILE%\.keytrace\stats.json
+              --out <文件>       默认 %USERPROFILE%\.keytrace\report.html
 
             全部数据只存本地，不联网。
             """);
@@ -448,6 +456,45 @@ internal static class Program
         Console.WriteLine($"  keybr-tui --import \"{output}\"");
         Console.WriteLine("（会先备份本地统计；加 --force 才覆盖）");
 
+        return 0;
+    }
+
+    /// <summary>生成自包含 HTML 看板。数据内嵌，不联网、不发请求。</summary>
+    private static int BuildDashboard(string[] args)
+    {
+        ConsoleBridge.Attach();
+
+        string statsPath = Value(args, "--stats") ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".keytrace",
+            "stats.json");
+
+        if (!File.Exists(statsPath))
+        {
+            Console.Error.WriteLine($"找不到 {statsPath}，先跑 keytrace stats。");
+            return 1;
+        }
+
+        string output = Value(args, "--out") ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".keytrace",
+            "report.html");
+
+        string json = File.ReadAllText(statsPath);
+        try
+        {
+            using System.Text.Json.JsonDocument doc = System.Text.Json.JsonDocument.Parse(json);
+        }
+        catch (System.Text.Json.JsonException ex)
+        {
+            Console.Error.WriteLine($"{statsPath} 不是合法 JSON：{ex.Message}");
+            return 1;
+        }
+
+        Dashboard.Write(output, json);
+
+        long size = new FileInfo(output).Length;
+        Console.WriteLine($"→ {output}（{size / 1024} KB，数据已内嵌，断网也能开）");
         return 0;
     }
 
