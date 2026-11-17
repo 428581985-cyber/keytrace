@@ -3,3 +3,6 @@ obj/
 .vs/
 *.user
 .workbuddy/
+
+# 自测输出目录，里面有真实日志的副本，不进仓库
+.test-events/
