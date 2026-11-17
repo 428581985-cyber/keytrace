@@ -419,7 +419,12 @@ internal sealed class RawInputCollector : IDisposable
 
         _writer.Write(ev.ToJsonLine(), today);
         EventCount++;
-        _keysSinceCommit++;
+
+        // 只数按下。kd 和 ku 都数的话，keys 正好翻倍。
+        if (!isUp)
+        {
+            _keysSinceCommit++;
+        }
     }
 
     /// <summary>从当前按键状态反推修饰键，对应事件格式里的 mods 位图。</summary>
