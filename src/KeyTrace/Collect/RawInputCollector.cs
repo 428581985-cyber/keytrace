@@ -56,6 +56,9 @@ internal sealed class RawInputCollector : IDisposable
 
     /// <summary>上一次上屏之后按了多少下键。用来识别"没有击键的文本变化"（粘贴、拖拽）。</summary>
     private int _keysSinceCommit;
+
+    /// <summary>上一次写 meta 的日期。跨天要补一条，否则新文件不知道自己是什么输入法方案。</summary>
+    private DateOnly _metaDay;
     private bool _hotkeyRegistered;
     private bool _running;
     private bool _disposed;
@@ -228,6 +231,12 @@ internal sealed class RawInputCollector : IDisposable
             // 停止信号用轮询而不是 WaitOne 阻塞，是因为不能被阻塞在采集线程上。
             case NativeMethods.WM_TIMER:
                 _writer.Flush();
+
+                if (DateOnly.FromDateTime(DateTime.Now) != _metaDay)
+                {
+                    WriteSessionMeta();
+                }
+
                 if (_stopSignal?.WaitOne(0) == true)
                 {
                     RequestStop();
@@ -311,6 +320,7 @@ internal sealed class RawInputCollector : IDisposable
         };
 
         _writer.Write(ev.ToJsonLine(), today);
+        _metaDay = today;
     }
 
     /// <summary>

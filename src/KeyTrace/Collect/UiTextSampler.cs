@@ -187,7 +187,7 @@ internal sealed class UiTextSampler : IDisposable
             return;
         }
 
-        string added = Diff(_confirmedText, text);
+        string added = StripPrivateUse(Diff(_confirmedText, text));
 
         if (added.Length == 0)
         {
@@ -399,6 +399,39 @@ internal sealed class UiTextSampler : IDisposable
         text.StartsWith("file://", StringComparison.OrdinalIgnoreCase)
         || text.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
         || text.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 去掉 Unicode 私有区字符（U+E000–U+F8FF）。VS Code 之类的编辑器会把图标字体画成
+    /// 这些码位，它们出现在文本里会被误当成用户输入。
+    /// </summary>
+    internal static string StripPrivateUse(string text)
+    {
+        bool hasPrivateUse = false;
+        foreach (char c in text)
+        {
+            if (c >= '\uE000' && c <= '\uF8FF')
+            {
+                hasPrivateUse = true;
+                break;
+            }
+        }
+
+        if (!hasPrivateUse)
+        {
+            return text;
+        }
+
+        System.Text.StringBuilder builder = new(text.Length);
+        foreach (char c in text)
+        {
+            if (c < '\uE000' || c > '\uF8FF')
+            {
+                builder.Append(c);
+            }
+        }
+
+        return builder.ToString();
+    }
 
     internal static bool ContainsNonAscii(string text)
     {

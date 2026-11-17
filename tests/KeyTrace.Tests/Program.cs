@@ -46,6 +46,10 @@ internal static class Program
         True("file URL", UiTextSampler.LooksLikeUrl("file:///C:/a.html"));
         True("https URL", UiTextSampler.LooksLikeUrl("https://example.com"));
         False("普通文本不是 URL", UiTextSampler.LooksLikeUrl("你好"));
+
+        Eq("去掉图标字体字符", "abc", UiTextSampler.StripPrivateUse("\uE000abc\uF8FF"));
+        Eq("纯图标字符变成空", string.Empty, UiTextSampler.StripPrivateUse("\uea88\ueb62"));
+        Eq("没有图标字符就原样返回", "你好", UiTextSampler.StripPrivateUse("你好"));
     }
 
     private static void SessionTests()
