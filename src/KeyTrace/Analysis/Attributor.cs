@@ -28,6 +28,9 @@ internal sealed class AttributorOptions
 
     /// <summary>词结束后延后判定，等可能的 comp/commit 到齐。上屏的空格会先关词，commit 后到。</summary>
     public long EvaluateDelayMs { get; init; } = 2000;
+
+    /// <summary>把"没有判成打错"的退格也记进结果。只在做金标对齐时打开。</summary>
+    public bool RecordAll { get; init; }
 }
 
 internal sealed class KeyBaseline
@@ -820,9 +823,12 @@ internal sealed class Attributor
                 int runLen = _runLengths.TryGetValue(d.RunId, out int len) ? len : d.RunPos;
                 double threshold = _r.Baseline.Threshold(d.Vk);
 
+                // 先定性再决定要不要记账。顺序即优先级：停顿、连击的判定不依赖文字，
+                // 盲区只挡住"判打错"，不该挡住"这是改措辞"。
                 if (runLen > _opt.TypoMaxBackspaces)
                 {
                     _r.Totals.RewordingLongRun++;
+                    Record(word, d, runLen, "rewording", "longRun", 0.9, finalText);
                     continue;
                 }
 
@@ -830,6 +836,7 @@ internal sealed class Attributor
                 {
                     // 在退格之前停了太久：是在想措辞，不是在纠手指
                     _r.Totals.RewordingLongPause++;
+                    Record(word, d, runLen, "rewording", "longPause", 0.8, finalText);
                     continue;
                 }
 
@@ -837,6 +844,7 @@ internal sealed class Attributor
                 {
                     // 同一次纠错里被连带删掉、但本身没打错的字符
                     _r.Totals.Collateral++;
+                    Record(word, d, runLen, "collateral", "chainBackspace", 0.7, finalText);
                     continue;
                 }
 
@@ -845,6 +853,7 @@ internal sealed class Attributor
                     // 这个会话读不到上屏文字：拼音字母和英文单词长得一模一样，
                     // 判"打错"只能是瞎猜。宁可不算，也不要把假错误喂给弱键排名。
                     _r.Totals.BlindDeletions++;
+                    Record(word, d, runLen, "blind", "noText", 0, finalText);
                     continue;
                 }
 
@@ -863,6 +872,7 @@ internal sealed class Attributor
                     // 删掉又原样打回来，内容没有任何变化——这不是纠错，
                     // 多半是手抖双击或输入法重发。算成打错只会污染弱键排名。
                     _r.Totals.RewordingSameChar++;
+                    Record(word, d, runLen, "rewording", "sameChar", 0.6, finalText);
                     continue;
                 }
 
@@ -903,6 +913,34 @@ internal sealed class Attributor
             }
 
             word.Deletions.Clear();
+        }
+
+        /// <summary>只在对齐金标时才记录非打错的退格，正常跑统计不写，免得 typos.jsonl 掺水。</summary>
+        private void Record(WordState word, Deletion d, int runLen, string kind, string cause, double confidence, string finalText)
+        {
+            if (!_opt.RecordAll)
+            {
+                return;
+            }
+
+            _r.Records.Add(new TypoRecord
+            {
+                Ts = d.Ts,
+                Sid = word.Sid,
+                Exe = word.Exe,
+                Kind = kind,
+                Vk = d.Vk,
+                Key = KeyCatalog.Name(d.Vk),
+                Deleted = d.Char,
+                Replacement = d.Replacement,
+                RunLen = runLen,
+                Iki = d.Iki,
+                Cause = cause,
+                Confidence = confidence,
+                Word = d.WordBefore,
+                WordAfter = finalText,
+                Position = d.Index,
+            });
         }
 
         private KeyStat KeyOf(int vk)

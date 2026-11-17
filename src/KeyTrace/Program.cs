@@ -54,6 +54,9 @@ internal static class Program
             case "stats":
                 return BuildStats(args[1..]);
 
+            case "label":
+                return ExportLabels(args[1..]);
+
             default:
                 Console.Error.WriteLine($"未知命令：{args[0]}");
                 Console.Error.WriteLine("运行 keytrace --help 查看可用命令。");
@@ -85,6 +88,7 @@ internal static class Program
               run        常驻录制，带托盘图标（推荐日常使用）
               collect    前台录制，调试用，Ctrl+C 结束
               stats      把 events.jsonl 归因成 stats.json 与 typos.jsonl
+              label      导出金标标注表，人工打勾后用来校准判定规则
               pause      暂停录制（等同托盘菜单 / Ctrl+Alt+P）
               resume     继续录制
               stop       让常驻进程退出
@@ -101,6 +105,12 @@ internal static class Program
               --since <范围>     7d / 全部写 all / 起始日期 2026-11-01，默认 7d
               --pause-factor <n> 停顿门槛 = IKI 中位数 × n，默认 3
               --min-samples <n>  单键样本门槛，默认 20
+
+            label 专用：
+              --out <文件>       标注表，默认 %USERPROFILE%\.keytrace\labeling-日期.csv
+              --total <n>        共导出多少条，默认 200
+              --seed <n>         抽样种子，默认 20261117（同种子导两次结果一样）
+              --anonymize        去掉文字、应用、时间，只留结构特征（准备公开时用）
 
             全部数据只存本地，不联网。
             """);
@@ -286,6 +296,78 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine($"→ {output}");
         Console.WriteLine($"→ {typos}");
+
+        return 0;
+    }
+
+    /// <summary>导出金标标注表：判错的全给，没判错的抽样给，用来同时算 precision 和 recall。</summary>
+    private static int ExportLabels(string[] args)
+    {
+        ConsoleBridge.Attach();
+
+        string directory = Value(args, "--in") ?? DefaultDataDirectory();
+        DateOnly today = DateOnly.FromDateTime(DateTime.Now);
+
+        if (!TryParseSince(Value(args, "--since") ?? "7d", today, out DateOnly? since))
+        {
+            Console.Error.WriteLine("--since 只接受 7d、all 或 2026-11-01 这样的日期。");
+            return 1;
+        }
+
+        int total = 200;
+        if (Value(args, "--total") is string totalText && (!int.TryParse(totalText, out total) || total < 1))
+        {
+            Console.Error.WriteLine("--total 需要正整数，例如 200。");
+            return 1;
+        }
+
+        int seed = 20261117;
+        if (Value(args, "--seed") is string seedText && !int.TryParse(seedText, out seed))
+        {
+            Console.Error.WriteLine("--seed 需要整数。");
+            return 1;
+        }
+
+        bool anonymize = HasFlag(args, "--anonymize");
+        string output = Value(args, "--out") ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".keytrace",
+            $"labeling-{DateTime.Now.ToString("yyyyMMdd", CultureInfo.InvariantCulture)}.csv");
+
+        if (Directory.Exists(output))
+        {
+            output = Path.Combine(output, "labeling.csv");
+        }
+
+        (List<string> files, IEnumerable<EventRecord> stream, int rejected) = EventLog.Read(directory, since, today);
+        List<EventRecord> events = [.. stream];
+        if (events.Count == 0)
+        {
+            Console.Error.WriteLine($"没有可读的事件：{directory}");
+            return 1;
+        }
+
+        AttributionResult result = new Attributor(new AttributorOptions { RecordAll = true }).Run(events, rejected);
+        List<LabelRow> rows = LabelExporter.Build(result, total, seed, anonymize);
+        string keyPath = LabelExporter.Write(output, rows);
+
+        int errors = rows.Count(r => r.Predicted);
+        int sampled = rows.Count - errors;
+        double rate = LabelExporter.SampleRate(result, total);
+
+        Console.WriteLine($"事件 {events.Count} 条（{files.Count} 个文件）");
+        Console.WriteLine($"标注表 {rows.Count} 条：判错的 {errors} 条全给 + 没判错的抽样 {sampled} 条");
+        Console.WriteLine($"抽样率 {rate * 100:0.0}%（估 recall 时按这个加权）");
+        if (anonymize)
+        {
+            Console.WriteLine("已去标识：文字、应用、时间都已清空，只留结构特征。");
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"标注表 → {output}");
+        Console.WriteLine($"机器判定 → {keyPath}（别打开，会污染你的判断）");
+        Console.WriteLine();
+        Console.WriteLine("在「你的判断」列填 1（这是打错）或 0（不是），保存后把标注表发我。");
 
         return 0;
     }

@@ -23,6 +23,7 @@ internal static class Program
         RotatorTests();
         AttributionTests();
         WeakScoreTests();
+        LabelExportTests();
 
         Console.WriteLine();
         Console.WriteLine($"通过 {_passed}，失败 {_failed}");
@@ -206,8 +207,68 @@ internal static class Program
         Eq("退格键不参与弱键排名", "0", StatsBuilder.WeakScore(edit, 1.0, 20)!.Value.ToString("0.###"));
     }
 
-    private static AttributionResult Analyze(params EventRecord[] scenario) => Analyze(true, scenario);
+    private static void LabelExportTests()
+    {
+        Section("金标导出");
 
+        AttributionResult result = new();
+        for (int i = 0; i < 5; i++)
+        {
+            result.Records.Add(Rec("typo", 1000 + i * 100));
+        }
+
+        for (int i = 0; i < 45; i++)
+        {
+            result.Records.Add(Rec("rewording", 2000 + i * 100));
+        }
+
+        for (int i = 0; i < 10; i++)
+        {
+            result.Records.Add(Rec("blind", 8000 + i * 100));
+        }
+
+        System.Collections.Generic.List<LabelRow> rows = LabelExporter.Build(result, 20, 7, anonymize: false);
+        Eq("条数按 --total 截断", "20", rows.Count.ToString());
+        Eq("判错的全部进表", "5", rows.Count(r => r.Predicted).ToString());
+        Eq("按时间排序", "1000", rows[0].Ts.ToString());
+        Eq("抽样率 = 抽中/池子", "0.333", LabelExporter.SampleRate(result, 20).ToString("0.###"));
+        False("盲区不进抽样池", rows.Any(r => r.Kind == "blind"));
+
+        System.Collections.Generic.List<LabelRow> again = LabelExporter.Build(result, 20, 7, anonymize: false);
+        True("同种子导两次一致", rows.Select(r => r.Ts).SequenceEqual(again.Select(r => r.Ts)));
+
+        System.Collections.Generic.List<LabelRow> other = LabelExporter.Build(result, 20, 8, anonymize: false);
+        False("换种子抽样不同", rows.Select(r => r.Ts).SequenceEqual(other.Select(r => r.Ts)));
+
+        System.Collections.Generic.List<LabelRow> anon = LabelExporter.Build(result, 20, 7, anonymize: true);
+        Eq("去标识后不留文字", string.Empty, anon[0].Word);
+        Eq("去标识后不留应用", string.Empty, anon[0].Exe);
+        Eq("去标识后不留时间", "0", anon[0].Ts.ToString());
+
+        string csv = LabelExporter.ToCsv(rows);
+        Eq("表头 11 列", "11", csv.Split("\r\n")[0].Split(',').Length.ToString());
+        False("标注表不暴露机器判定", csv.Contains("机器判定"));
+        True("含逗号的字段被引号包住", csv.Contains("\"abc,def\""));
+
+        string key = LabelExporter.ToKeyCsv(rows);
+        Eq("判定表 4 列", "4", key.Split("\r\n")[0].Split(',').Length.ToString());
+        True("判定表带机器结论", key.Contains("是,"));
+
+        Eq("换行可见化", "a\\nb", LabelExporter.Visible("a\nb"));
+        Eq("空格可见化", "a·b", LabelExporter.Visible("a b"));
+    }
+
+    private static TypoRecord Rec(string kind, long ts) => new()
+    {
+        Kind = kind,
+        Ts = ts,
+        Word = "abc,def",
+        Deleted = ',',
+        Key = ",",
+        RunLen = 1,
+    };
+
+    private static AttributionResult Analyze(params EventRecord[] scenario) => Analyze(true, scenario);
     private static AttributionResult Analyze(bool textVisible, params EventRecord[] scenario)
     {
         System.Collections.Generic.List<EventRecord> events = [];
