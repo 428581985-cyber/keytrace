@@ -1,15 +1,17 @@
 @echo off
 setlocal
 
-rem Installs (or reinstalls) the logon scheduled task for KeyTrace.
-rem Must run as administrator - the script re-launches itself elevated.
+rem Installs (or reinstalls) the KeyTrace logon task.
+rem Re-launches itself elevated when needed.
 rem
 rem Why a scheduled task instead of the Startup folder:
 rem   1. RunLevel Highest - otherwise keystrokes in elevated windows are missed (UIPI)
 rem   2. No execution time limit - schtasks defaults to killing long-running tasks
 rem
-rem Assumes the repo lives at %USERPROFILE%\keytrace and is built with:
-rem   dotnet build -c Release
+rem The task points at %LOCALAPPDATA%\KeyTrace, NOT at bin\Release.
+rem Reason: bin\Release gets wiped by dotnet clean / rebuilt by every build,
+rem so a task pointing there breaks on the first clean. Confirmed by a
+rem real failure: task returned 0x80070002 (file not found) after a rebuild.
 
 net session >nul 2>&1
 if %errorlevel% neq 0 (
@@ -17,12 +19,38 @@ if %errorlevel% neq 0 (
     exit /b
 )
 
+set "DEST=%LOCALAPPDATA%\KeyTrace"
+set "REPO=%USERPROFILE%\keytrace"
+
 echo.
 echo  KeyTrace - install logon task
 echo  -----------------------------
 echo.
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$exe=(Join-Path $env:USERPROFILE 'keytrace\src\KeyTrace\bin\Release\net8.0-windows\keytrace.exe'); if(-not (Test-Path $exe)){ Write-Host '[ERROR] keytrace.exe not found. Run: dotnet build -c Release'; exit 1 }; Unregister-ScheduledTask -TaskName 'KeyTrace' -Confirm:$false -ErrorAction SilentlyContinue; $a=New-ScheduledTaskAction -Execute $exe -Argument 'run'; $t=New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME; $s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1); $p=New-ScheduledTaskPrincipal -UserId ('{0}\{1}' -f $env:USERDOMAIN,$env:USERNAME) -LogonType Interactive -RunLevel Highest; Register-ScheduledTask -TaskName 'KeyTrace' -Action $a -Trigger $t -Settings $s -Principal $p -Force | Out-Null; if(-not (Get-ScheduledTask -TaskName 'KeyTrace' -ErrorAction SilentlyContinue)){ Write-Host '[ERROR] registration failed'; exit 1 }; Write-Host '[OK] task created'; Write-Host '  trigger   : at logon'; Write-Host '  run level : highest'; Write-Host '  time limit: none'; Start-ScheduledTask -TaskName 'KeyTrace'; Write-Host '[OK] started - look for a green dot in the tray'"
+if not exist "%DEST%\keytrace.exe" goto publish
+echo [1/3] already published: %DEST%
+goto stopold
+
+:publish
+echo [1/3] publishing to %DEST%
+dotnet publish "%REPO%\src\KeyTrace" -c Release -o "%DEST%" >nul 2>&1
+if not exist "%DEST%\keytrace.exe" (
+    echo.
+    echo [ERROR] publish failed.
+    echo   Check that the .NET SDK is installed: dotnet --list-sdks
+    echo   Check that the repo is at %REPO%
+    echo.
+    pause
+    exit /b 1
+)
+
+:stopold
+echo [2/3] stopping running instance
+"%DEST%\keytrace.exe" stop >nul 2>&1
+timeout /t 3 /nobreak >nul
+
+echo [3/3] registering task
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$exe='%DEST%\keytrace.exe'; Unregister-ScheduledTask -TaskName 'KeyTrace' -Confirm:$false -ErrorAction SilentlyContinue; $a=New-ScheduledTaskAction -Execute $exe -Argument 'run'; $t=New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME; $s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1); $p=New-ScheduledTaskPrincipal -UserId ('{0}\{1}' -f $env:USERDOMAIN,$env:USERNAME) -LogonType Interactive -RunLevel Highest; Register-ScheduledTask -TaskName 'KeyTrace' -Action $a -Trigger $t -Settings $s -Principal $p -Force | Out-Null; if(-not (Get-ScheduledTask -TaskName 'KeyTrace' -ErrorAction SilentlyContinue)){ Write-Host '[ERROR] registration failed'; exit 1 }; Write-Host '[OK] task registered'; Write-Host '  exe       : ' $exe; Write-Host '  trigger   : at logon'; Write-Host '  run level : highest'; Write-Host '  time limit: none'; Start-ScheduledTask -TaskName 'KeyTrace'; Start-Sleep -Seconds 4; if(Get-Process -Name keytrace -ErrorAction SilentlyContinue){ Write-Host '[OK] running - green dot in the tray' } else { Write-Host '[WARN] not running - check Task Scheduler' }"
 
 echo.
 echo To remove the task later, run as administrator:
