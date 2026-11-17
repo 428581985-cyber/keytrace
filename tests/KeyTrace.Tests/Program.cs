@@ -28,6 +28,7 @@ internal static class Program
         ShuangpinTests();
         ZhSelectionTests();
         DashboardTests();
+        DrillPageTests();
 
         Console.WriteLine();
         Console.WriteLine($"通过 {_passed}，失败 {_failed}");
@@ -380,6 +381,19 @@ internal static class Program
         False("不引用任何外部资源", html.Contains("http://") || html.Contains("https://"));
         False("没有外链脚本或样式", html.Contains("src=") || html.Contains("@import"));
         True("中文界面", html.Contains("打字画像"));
+    }
+
+    private static void DrillPageTests()
+    {
+        Section("练习页");
+
+        string html = DrillPage.Build("[{\"c\":\"便\",\"p\":\"bian\",\"k\":\"bm\"}]", "测试练习");
+        True("题目被内嵌", html.Contains("\"k\":\"bm\""));
+        True("标题被替换", html.Contains("测试练习"));
+        False("占位符已替换", html.Contains("__ITEMS__") || html.Contains("__TITLE__"));
+        False("不引用任何外部资源", html.Contains("http://") || html.Contains("https://"));
+        False("没有外链脚本或样式", html.Contains("src=") || html.Contains("@import"));
+        True("练完能贴回结果", html.Contains("finishedAt"));
     }
 
     private static TypoRecord Rec(string kind, long ts) => new()

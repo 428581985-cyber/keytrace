@@ -22,6 +22,7 @@ keytrace stats --since all      # 全部历史
 keytrace label                  # 导出人工标注表，用来校准"什么算打错"
 keytrace export --format keybr   # 导出成 keybr-tui 能导入的格式
 keytrace words                  # 按弱键生成中文双拼练习串
+keytrace drill                  # 生成练习页（单文件 HTML，双击就练）
 ```
 
 事件写在 `%USERPROFILE%\.keytrace\events\`，一行一个 JSON，格式见 [docs/event-schema.md](docs/event-schema.md)。

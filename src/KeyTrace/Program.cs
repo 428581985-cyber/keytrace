@@ -66,6 +66,9 @@ internal static class Program
             case "dashboard":
                 return BuildDashboard(args[1..]);
 
+            case "drill":
+                return BuildDrill(args[1..]);
+
             default:
                 Console.Error.WriteLine($"未知命令：{args[0]}");
                 Console.Error.WriteLine("运行 keytrace --help 查看可用命令。");
@@ -101,6 +104,7 @@ internal static class Program
               export     把统计翻译成别人的格式（目前支持 keybr）
               words      按弱键生成中文练习串
               dashboard  生成单文件 HTML 看板，双击就开
+              drill      生成单文件练习页，一屏一个字，练完给成绩
               pause      暂停录制（等同托盘菜单 / Ctrl+Alt+P）
               resume     继续录制
               stop       让常驻进程退出
@@ -136,6 +140,11 @@ internal static class Program
             dashboard 专用：
               --stats <文件>     读哪个统计，默认 %USERPROFILE%\.keytrace\stats.json
               --out <文件>       默认 %USERPROFILE%\.keytrace\report.html
+
+            drill 专用：
+              --weak <字母>      弱键，逗号分隔；不给就从 stats.json 取前五
+              --count <n>        练多少个字，默认 60
+              --out <文件>       默认 %USERPROFILE%\.keytrace\drill.html
 
             全部数据只存本地，不联网。
             """);
@@ -457,6 +466,89 @@ internal static class Program
         Console.WriteLine("（会先备份本地统计；加 --force 才覆盖）");
 
         return 0;
+    }
+
+    /// <summary>生成练习页：一屏一个字，打小鹤双拼的两键。</summary>
+    private static int BuildDrill(string[] args)
+    {
+        ConsoleBridge.Attach();
+
+        int count = 60;
+        if (Value(args, "--count") is string countText && (!int.TryParse(countText, out count) || count < 1))
+        {
+            Console.Error.WriteLine("--count 需要正整数。");
+            return 1;
+        }
+
+        List<char> weak;
+        string source;
+        if (Value(args, "--weak") is string spec)
+        {
+            weak = [.. spec.ToLowerInvariant().Where(c => c is >= 'a' and <= 'z').Distinct()];
+            source = "命令行指定";
+        }
+        else
+        {
+            weak = WeakKeysFromStats(out string note);
+            source = note;
+        }
+
+        if (weak.Count == 0)
+        {
+            Console.Error.WriteLine("没有弱键可用：先跑 keytrace stats，或者用 --weak c,v 手动指定。");
+            return 1;
+        }
+
+        List<HanziEntry> picked = ZhSelector.Pick(new HashSet<char>(weak), count);
+        if (picked.Count == 0)
+        {
+            Console.Error.WriteLine("字表是空的——data/zh-hanzi.tsv 可能没被打进程序集。");
+            return 1;
+        }
+
+        string items = BuildDrillItems(picked);
+        string title = $"{picked.Count} 个字 · 小鹤双拼练习";
+
+        string output = Value(args, "--out") ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".keytrace",
+            "drill.html");
+
+        DrillPage.Write(output, items, title);
+
+        Console.WriteLine($"弱键 {string.Join(' ', weak.Select(char.ToUpperInvariant))}（{source}）");
+        Console.WriteLine($"{picked.Count} 个字，覆盖 " + string.Join(" ",
+            weak.Select(w => $"{char.ToUpperInvariant(w)}×{picked.Count(p => p.Code.Contains(w))}")));
+        Console.WriteLine();
+        Console.WriteLine($"→ {output}");
+        Console.WriteLine("双击打开，点一下页面，然后按键盘上对应的两个字母。");
+        Console.WriteLine("练完把页面底下那段结果贴回来，下次就能按表现出题。");
+
+        return 0;
+    }
+
+    private static string BuildDrillItems(List<HanziEntry> picked)
+    {
+        using MemoryStream stream = new();
+        using (System.Text.Json.Utf8JsonWriter w = new(stream, new System.Text.Json.JsonWriterOptions
+        {
+            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        }))
+        {
+            w.WriteStartArray();
+            foreach (HanziEntry e in picked)
+            {
+                w.WriteStartObject();
+                w.WriteString("c", e.Char.ToString());
+                w.WriteString("p", e.Syllable);
+                w.WriteString("k", e.Code);
+                w.WriteEndObject();
+            }
+
+            w.WriteEndArray();
+        }
+
+        return System.Text.Encoding.UTF8.GetString(stream.ToArray());
     }
 
     /// <summary>生成自包含 HTML 看板。数据内嵌，不联网、不发请求。</summary>
