@@ -68,7 +68,13 @@ internal sealed class KeyStat
     public int Vk { get; init; }
     public int Presses { get; set; }
     public int Shifted { get; set; }
+
+    /// <summary>确认的纠错：删掉之后在原位补了别的东西。弱键排名只认这个。</summary>
     public int Typos { get; set; }
+
+    /// <summary>删了但没在原位补东西——那个词就此结束。改结构的嫌疑大得多。</summary>
+    public int TyposUnreplaced { get; set; }
+
     public int PinyinTypos { get; set; }
     public List<long> Iki { get; } = [];
     public List<long> Dwell { get; } = [];
@@ -160,6 +166,7 @@ internal sealed class Counters
     public int Sessions { get; set; }
     public int Backspaces { get; set; }
     public int Typos { get; set; }
+    public int TyposUnreplaced { get; set; }
     public int PinyinErrors { get; set; }
     public int SelectionErrors { get; set; }
     public int RewordingLongPause { get; set; }
@@ -876,18 +883,33 @@ internal sealed class Attributor
                     continue;
                 }
 
+                KeyStat key = KeyOf(d.Vk);
+
+                // 只在原位补了别的东西，才算"确认的纠错"。
+                // 删完什么都不补，那个词就到此为止了——代码里九成是改结构（打了 { 又删掉），
+                // 不是手滑。实测：把这类算进打错，'[' 会以 0.91 分稳居弱键第一，
+                // 一条都不算它就掉到 0.25，说明那个第一名完全是假的。
+                bool confirmed = isPinyinError || (d.Replacement is char fixedChar && fixedChar != d.Char);
+                if (confirmed)
+                {
+                    key.Typos++;
+                    _r.Totals.Typos++;
+                }
+                else
+                {
+                    key.TyposUnreplaced++;
+                    _r.Totals.TyposUnreplaced++;
+                }
+
                 if (isPinyinError)
                 {
+                    // 拼音层的"删完就接着打剩下的"，本来就是正常形态，不按未替换处理
                     _r.Chinese.PinyinErrors++;
                     _r.Totals.PinyinErrors++;
-                    KeyOf(d.Vk).PinyinTypos++;
+                    key.PinyinTypos++;
                     _r.Chinese.PinyinErrorKeys[d.Vk] =
                         _r.Chinese.PinyinErrorKeys.TryGetValue(d.Vk, out int n) ? n + 1 : 1;
                 }
-
-                KeyStat key = KeyOf(d.Vk);
-                key.Typos++;
-                _r.Totals.Typos++;
 
                 AppStat app = AppOf(word.Exe);
                 app.Typos++;

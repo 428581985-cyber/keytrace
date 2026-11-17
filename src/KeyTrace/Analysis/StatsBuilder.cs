@@ -121,6 +121,7 @@ internal static class StatsBuilder
         w.WriteNumber("sessionsText", r.Totals.SessionsText);
         w.WriteNumber("backspaces", r.Totals.Backspaces);
         w.WriteNumber("typos", r.Totals.Typos);
+        w.WriteNumber("typosUnreplaced", r.Totals.TyposUnreplaced);
         w.WriteNumber("pinyinErrors", r.Totals.PinyinErrors);
         w.WriteNumber("selectionErrors", r.Totals.SelectionErrors);
         w.WriteNumber("rewording", r.Totals.Rewording);
@@ -147,6 +148,7 @@ internal static class StatsBuilder
             w.WriteNumber("presses", k.Presses);
             w.WriteNumber("shifted", k.Shifted);
             w.WriteNumber("typos", k.Typos);
+            w.WriteNumber("typosUnreplaced", k.TyposUnreplaced);
             w.WriteNumber("pinyinTypos", k.PinyinTypos);
             w.WriteNumber("typoRate", Round(Rate(k.Typos, k.Presses), 4));
             w.WriteNumber("ikiMeanMs", Round(iki.Count == 0 ? 0 : iki.Average(), 1));
@@ -176,6 +178,11 @@ internal static class StatsBuilder
     /// 弱键评分：错误率占七成，相对慢速占三成，两项都做绝对归一。
     /// 思路来自 keybr 的逐键置信度（错误优先、速度次之、样本不足不排名），
     /// 但不做指数平滑——这里是一次性离线统计，没有"下一课"要调。
+    ///
+    /// 两条硬门槛：
+    /// 1. 一次都没错过就不进排名。IKI 里混着"停下来想"的时间，光凭慢判定弱键没有依据；
+    ///    实测 `9` 零错误、只因慢就拿到 0.3，排在真有 4 次错误的 F 前面。
+    /// 2. 错误数只算"确认的纠错"（删完在原位补了别的东西），删完不补的另计，不进评分。
     /// </summary>
     internal static double? WeakScore(KeyStat k, double ikiRatio, int minSamples)
     {
@@ -185,7 +192,7 @@ internal static class StatsBuilder
             return 0;
         }
 
-        if (k.Presses < minSamples)
+        if (k.Presses < minSamples || k.Typos == 0)
         {
             return null;
         }

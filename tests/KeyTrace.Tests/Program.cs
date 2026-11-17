@@ -162,8 +162,16 @@ internal static class Program
             Kd(3600, 8),
             Commit(4000, "你", 3));
         Eq("没有 comp 的中文退格不猜成拼音层", "0", noComp.Totals.PinyinErrors.ToString());
-        Eq("没有 comp 的退格算普通 typo", "1", noComp.Totals.Typos.ToString());
+        Eq("没有 comp 的退格算普通 typo", "1", (noComp.Totals.Typos + noComp.Totals.TyposUnreplaced).ToString());
         Eq("compCoverage 只统计到 1 条", "0", noComp.Chinese.CommitsWithComp.ToString());
+
+        AttributionResult unreplaced = Analyze(
+            Kd(3000, 84),
+            Kd(3200, 72),
+            Kd(3400, 8)); // 打了 th，删掉 h，后面什么都没补
+        Eq("删完不补的不算确认纠错", "0", unreplaced.Totals.Typos.ToString());
+        Eq("删完不补的单独计数", "1", unreplaced.Totals.TyposUnreplaced.ToString());
+        Eq("该键的确认错误为 0", "0", unreplaced.Keys[72].Typos.ToString());
 
         AttributionResult pasted = Analyze(false, Commit(3000, "粘贴进来的一段", 0));
         Eq("keys 为 0 的 commit 是粘贴", "1", pasted.Skipped.Paste.ToString());
@@ -201,7 +209,10 @@ internal static class Program
         Eq("错误率拉满时只看速度项", "0.7", StatsBuilder.WeakScore(bad, 1.0, 20)!.Value.ToString("0.###"));
 
         KeyStat slow = new() { Vk = 90, Presses = 100, Typos = 0 };
-        True("速度慢也应当有分", StatsBuilder.WeakScore(slow, 2.0, 20) is > 0);
+        Eq("零错误不进排名（慢不等于弱）", "null", StatsBuilder.WeakScore(slow, 2.0, 20)?.ToString("0.###") ?? "null");
+
+        KeyStat slowButWrong = new() { Vk = 90, Presses = 100, Typos = 3 };
+        True("有错误时慢速会加分", StatsBuilder.WeakScore(slowButWrong, 2.0, 20) is > 0);
 
         KeyStat edit = new() { Vk = 8, Presses = 500, Typos = 50 };
         Eq("退格键不参与弱键排名", "0", StatsBuilder.WeakScore(edit, 1.0, 20)!.Value.ToString("0.###"));

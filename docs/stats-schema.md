@@ -120,16 +120,17 @@ keytrace stats --pause-factor 2.5 --min-samples 30
 | `chars` | **真正打出来的**上屏字符数（批量上屏已排除） |
 | `commits` / `sessions` / `sessionsText` | 上屏次数、会话数、其中有文字的会话数 |
 | `backspaces` | 退格次数 |
-| `typos` | 打错总数（含拼音层） |
+| `typos` | **确认的**打错数：删掉后在原位补了别的东西（含拼音层） |
+| `typosUnreplaced` | 删了但原位什么都没补——那个词到此为止。改结构的嫌疑大得多 |
 | `pinyinErrors` / `selectionErrors` | 中文两层错分开计 |
 | `rewording` | 改措辞：`longPause + longRun + earlierText + sameCharRetype` |
 | `collateral` | 同一次纠错里被连带删掉、本身没错的字符 |
 | `blindDeletions` | 读不到文字的会话里发生的退格，不判对错 |
 
 **恒等式**（可用来自检）：
-`backspaces = typos + rewording + collateral + blindDeletions + selectionErrors`
+`backspaces = typos + typosUnreplaced + rewording + collateral + blindDeletions + selectionErrors`
 
-两天实测：1315 = 85 + 1086 + 98 + 40 + 6 ✓
+两天实测：1737 = 45 + 32 + 1467 + 133 + 53 + 7 ✓
 
 ### `keys[]`
 
@@ -139,13 +140,14 @@ keytrace stats --pause-factor 2.5 --min-samples 30
 | --- | --- |
 | `vk` / `name` / `role` | `role` ∈ `letter / digit / symbol / space / enter / tab / edit / navigate / function / modifier` |
 | `presses` / `shifted` | 按下次数、其中按住 Shift 的次数 |
-| `typos` / `pinyinTypos` | 归到这个键的打错数；`pinyinTypos` 是其中拼音层那部分 |
-| `typoRate` | `typos / presses` |
+| `typos` / `pinyinTypos` | **确认的**打错数；`pinyinTypos` 是其中拼音层那部分 |
+| `typosUnreplaced` | 删了原位没补的打错嫌疑数。**不进评分**，只给人看 |
+| `typoRate` | `typos / presses`（只算确认的） |
 | `ikiMeanMs` / `ikiP50Ms` / `ikiP90Ms` | 这个键的节奏 |
 | `pauseThresholdMs` | 这个键自己的停顿门槛 |
 | `dwellMeanMs` | 按住时长（第一次 `kd` 到对应 `ku`） |
 | `ikiRatio` | `ikiP50 / 全局 ikiP50`，>1 表示比平均慢 |
-| `weakScore` | 0–1，见下。样本不足为 `null` |
+| `weakScore` | 0–1，见下。样本不足或零错误为 `null` |
 
 ### `weakScore`
 
@@ -157,8 +159,27 @@ weakScore = 0.7 × errPart + 0.3 × slowPart
 
 - 只对 `letter / digit / symbol` 计算，`Backspace` 和修饰键恒为 `0`——否则排名第一永远是退格
 - `presses < minKeySamples`（默认 20）时为 `null`，**不进排名**。样本少的键错误率天然虚高
+- `typos == 0` 时为 `null`，**不进排名**。IKI 里混着"停下来想"的时间，光凭慢判定弱键没有依据——实测 `9` 零错误、只因慢就排到有 4 次错误的 F 前面
+- 错误数只算"确认的纠错"（删完在原位补了别的东西），删完不补的另计、不进评分
 - 两项都做绝对归一，不按"当前最大值"归一：否则样本一少，最高分会随数据抖动
 - 思路取自 keybr 的逐键置信度（错误优先、速度次之、样本不足不排名）；不做指数平滑，因为这是一次性离线统计
+
+### 为什么加"确认的纠错"这道闸
+
+没有人工金标，就只能检验**规则口径变不变**：把同一天的数据换几种都说得通的口径重算，看弱键排名会不会翻。
+
+两天 347 条有缓冲区的退格里，`[` 在四种口径下的分数：
+
+| 口径 | `[` 的 weakScore |
+| --- | --- |
+| 原规则（删了就算错） | **0.913，第一名** |
+| 删完不补的不算错 | 0.246 |
+| 符号不算错 | **0** |
+| 上面两条 + 只认 400ms 内的退格 | **0** |
+
+它那 7 条错误全是"打了 `{` 又删掉、原位什么都没补"。写代码时这更可能是改结构，不是手指打滑，所以现在这类单独记 `typosUnreplaced`，不进评分。同一份数据里 `C`（`C` 打成 `c`）在每个口径下都稳定在 0.29–0.39，那才是真信号。
+
+这条闸门不改变判定记录（`typos.jsonl` 里两类都在），只影响谁进弱键排名。
 
 ### `symbols[]`
 
@@ -254,5 +275,6 @@ keytrace label --total 300 --seed 42  # 换样本量或抽样种子
 | `compCoverage` 只有 28%，中文两层错分不全 | 报出来，不猜。修法是采集层改进组字中间态的捕获，不是归因层硬凑 |
 | WorkBuddy / 微信读不到文字，占击键 36% | 这些会话整段不判错（`blindDeletions`），只贡献速度数据 |
 | 单字符符号（`{` `;`）的"打了又删"难分是手滑还是改结构 | 置信度 0.6，`cause: ambiguous`。等人工金标定阈值 |
-| 精度/召回未标定 | 标注表已能导出（`keytrace label`），标注还没做。标完再算，现在只有合成用例测试 |
+| 精度/召回未标定 | 标注表已能导出（`keytrace label`）。正确做法是抄写任务（Conijn et al. 2019 / Wobbrock & Myers 2006：目标文本已知，用编辑距离机械判错，不需要人回忆），留到真正开始打字训练时再做。在那之前用上面那套"换口径重算"的稳健性检查代替 |
+| 两天的数据不够给稀有键排名 | `\`、`'`、`]` 这些键只有 20–30 次按下的样本，一次错误就能把分数顶起来。至少累积一周再定 Top 5，报告里要带 `presses` |
 | IKI 里混着思考时间 | 用中位数而不是均值，并把它权重压到 30% |
