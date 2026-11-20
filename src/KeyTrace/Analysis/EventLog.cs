@@ -125,9 +125,56 @@ internal static class EventLog
             }
         }
 
-        // 文件之间可能有跨天残留，按单调时钟排一次，后面的状态机才敢顺序扫
-        events.Sort((a, b) => a.Mono.CompareTo(b.Mono));
+        // 文件之间可能有跨天残留或多次重启，先按会话时间排再按单调时钟排，后面的状态机才敢顺序扫
+        SortChronologically(events);
         return (files, events, rejected);
+    }
+
+    /// <summary>
+    /// 按真实时间线排序：会话起始墙钟时间 → Sid → 会话内单调时钟 Mono → Ts。
+    /// 进程重启后 Mono 会从 0 重计，直接按 Mono 排会把多轮运行的会话交错在一起；
+    /// 同一会话内仍以 Mono 为准，免疫系统对时造成的 Ts 跳变。
+    /// </summary>
+    internal static void SortChronologically(List<EventRecord> events)
+    {
+        if (events.Count <= 1)
+        {
+            return;
+        }
+
+        Dictionary<string, long> sessionStartTs = [];
+        foreach (EventRecord e in events)
+        {
+            if (e.Sid.Length == 0)
+            {
+                continue;
+            }
+
+            if (!sessionStartTs.TryGetValue(e.Sid, out long start) || e.Ts < start)
+            {
+                sessionStartTs[e.Sid] = e.Ts;
+            }
+        }
+
+        events.Sort((a, b) =>
+        {
+            long aStart = a.Sid.Length > 0 ? sessionStartTs[a.Sid] : a.Ts;
+            long bStart = b.Sid.Length > 0 ? sessionStartTs[b.Sid] : b.Ts;
+            int cmp = aStart.CompareTo(bStart);
+            if (cmp != 0)
+            {
+                return cmp;
+            }
+
+            cmp = string.CompareOrdinal(a.Sid, b.Sid);
+            if (cmp != 0)
+            {
+                return cmp;
+            }
+
+            cmp = a.Mono.CompareTo(b.Mono);
+            return cmp != 0 ? cmp : a.Ts.CompareTo(b.Ts);
+        });
     }
 
     private static IEnumerable<string> FindFiles(string directory, DateOnly? since, DateOnly today)

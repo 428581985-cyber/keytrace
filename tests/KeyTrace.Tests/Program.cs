@@ -200,8 +200,55 @@ internal static class Program
         Eq("扫描码为 0 判为合成数据", "1", synthetic.Skipped.Synthetic.ToString());
 
         AttributionResult shortcut = Analyze(
-            new EventRecord(1, 3000, 3000, "kd", 80, 25, 2, "a.exe", "s1", null, null, null));
+            new EventRecord(1, 1_700_000_003_000, 3000, "kd", 80, 25, 2, "a.exe", "s1", null, null, null));
         Eq("带 Ctrl 的按键不算打字", "1", shortcut.Skipped.Shortcut.ToString());
+
+        // 多轮重启后 mono 会从 0 重计，不能按 mono 把不同会话交错到一起
+        System.Collections.Generic.List<EventRecord> restarted = [];
+        for (int i = 0; i < 20; i++)
+        {
+            long m = 100 + i * 200;
+            restarted.Add(new EventRecord(1, 1_700_000_000_000 + m, m, "kd", 65 + (i % 26), 30, 0, "base.exe", "base", null, null, null));
+        }
+
+        long ts1 = 1_700_000_010_000;
+        restarted.AddRange([
+            new EventRecord(1, ts1 + 100, 100, "kd", 84, 20, 0, "a.exe", "s-run1", null, null, null),
+            new EventRecord(1, ts1 + 300, 300, "kd", 82, 19, 0, "a.exe", "s-run1", null, null, null),
+            new EventRecord(1, ts1 + 500, 500, "kd", 8, 14, 0, "a.exe", "s-run1", null, null, null),
+            new EventRecord(1, ts1 + 700, 700, "kd", 69, 18, 0, "a.exe", "s-run1", null, null, null),
+            new EventRecord(1, ts1 + 900, 900, "commit", 0, 0, 0, "a.exe", "s-run1", "te", "uia", 4),
+        ]);
+
+        long ts2 = 1_700_000_020_000;
+        restarted.AddRange([
+            new EventRecord(1, ts2 + 100, 100, "kd", 65, 30, 0, "a.exe", "s-run2", null, null, null),
+            new EventRecord(1, ts2 + 300, 300, "kd", 87, 17, 0, "a.exe", "s-run2", null, null, null),
+            new EventRecord(1, ts2 + 500, 500, "kd", 8, 14, 0, "a.exe", "s-run2", null, null, null),
+            new EventRecord(1, ts2 + 700, 700, "kd", 81, 16, 0, "a.exe", "s-run2", null, null, null),
+            new EventRecord(1, ts2 + 900, 900, "commit", 0, 0, 0, "a.exe", "s-run2", "aq", "uia", 4),
+        ]);
+
+        AttributionResult multiRun = new Attributor().Run(restarted);
+        Eq("跨重启同 mono 不交错，两个会话都判出打错", "2", multiRun.Totals.Typos.ToString());
+
+        // 同会话内 ts 倒退（如 NTP 对时）仍按 mono 排（故意打乱输入顺序验排序本身）
+        AttributionResult clockSkew = Analyze(
+            new EventRecord(1, 1_700_000_005_500, 500, "kd", 8, 14, 0, "a.exe", "s1", null, null, null),
+            new EventRecord(1, 1_700_000_010_100, 100, "kd", 84, 20, 0, "a.exe", "s1", null, null, null),
+            new EventRecord(1, 1_700_000_005_700, 700, "kd", 69, 18, 0, "a.exe", "s1", null, null, null),
+            new EventRecord(1, 1_700_000_005_300, 300, "kd", 82, 19, 0, "a.exe", "s1", null, null, null));
+        Eq("同会话 ts 倒退仍按 mono 归因", "1", clockSkew.Totals.Typos.ToString());
+        Eq("同会话 ts 倒退时被删字符是 r", "r", clockSkew.Records[0].Deleted?.ToString() ?? "null");
+
+        // 符号键打错应计入 symbols[].typos
+        AttributionResult symTypo = Analyze(
+            new EventRecord(1, 1_700_000_003_000, 3000, "kd", 219, 26, 1, "a.exe", "s1", null, null, null), // {
+            Kd(3200, 8),
+            new EventRecord(1, 1_700_000_003_400, 3400, "kd", 219, 26, 0, "a.exe", "s1", null, null, null), // [
+            Commit(3600, "[", 3));
+        Eq("符号打错计入 typos", "1", symTypo.Totals.Typos.ToString());
+        Eq("符号明细同步记录 typos", "1", (symTypo.Symbols.TryGetValue('{', out SymbolStat? brace) ? brace.Typos : 0).ToString());
     }
 
     private static void WeakScoreTests()

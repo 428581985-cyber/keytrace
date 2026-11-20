@@ -218,10 +218,10 @@ internal sealed class Attributor
 
     public AttributionResult Run(IReadOnlyList<EventRecord> events, int unparsable = 0)
     {
-        // 调用方一般已经按 mono 排好（EventLog.Read 会排），这里再兜一次：
+        // 调用方一般已经排好序（EventLog.Read 会排），这里再兜一次：
         // 顺序错了会把"上屏后退格"判成"删缓冲区的字母"，错得很隐蔽。
         List<EventRecord> ordered = [.. events];
-        ordered.Sort((a, b) => a.Mono.CompareTo(b.Mono));
+        EventLog.SortChronologically(ordered);
 
         AttributionResult result = new() { Baseline = ComputeBaseline(ordered) };
         result.Skipped.Unparsable = unparsable;
@@ -740,25 +740,37 @@ internal sealed class Attributor
         {
             foreach (char c in text)
             {
-                if (char.IsControl(c) || IsChineseChar(c) || (c < 128 && char.IsLetter(c)))
+                if (!IsSymbolChar(c))
                 {
                     continue;
                 }
 
-                if (!_r.Symbols.TryGetValue(c, out SymbolStat? stat))
-                {
-                    stat = new SymbolStat { Char = c };
-                    if (KeyCatalog.TryKeyOf(c, out (int Vk, bool Shift) loc))
-                    {
-                        stat.Vk = loc.Vk;
-                        stat.Shift = loc.Shift;
-                    }
+                EnsureSymbol(c).Count++;
+            }
+        }
 
-                    _r.Symbols[c] = stat;
+        private static bool IsSymbolChar(char c) =>
+            !char.IsControl(c) && !IsChineseChar(c) && !(c < 128 && char.IsLetter(c));
+
+        private SymbolStat EnsureSymbol(char c, int fallbackVk = 0)
+        {
+            if (!_r.Symbols.TryGetValue(c, out SymbolStat? stat))
+            {
+                stat = new SymbolStat { Char = c };
+                if (KeyCatalog.TryKeyOf(c, out (int Vk, bool Shift) loc))
+                {
+                    stat.Vk = loc.Vk;
+                    stat.Shift = loc.Shift;
+                }
+                else if (fallbackVk != 0)
+                {
+                    stat.Vk = fallbackVk;
                 }
 
-                stat.Count++;
+                _r.Symbols[c] = stat;
             }
+
+            return stat;
         }
 
         private void OnKeyUp(EventRecord e)
@@ -894,6 +906,10 @@ internal sealed class Attributor
                 {
                     key.Typos++;
                     _r.Totals.Typos++;
+                    if (IsSymbolChar(d.Char))
+                    {
+                        EnsureSymbol(d.Char, d.Vk).Typos++;
+                    }
                 }
                 else
                 {
