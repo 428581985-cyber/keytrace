@@ -65,6 +65,9 @@ h2{font-size:14px;font-weight:500;color:var(--dim);margin:36px 0 14px;
 .advice ol{margin:8px 0 0;padding-left:20px}
 .advice li{margin:6px 0}
 .advice code{background:#2a2a2a;border-radius:4px;padding:1px 5px;font-size:12px}
+.guard{background:#292118;border:1px solid #6b4d25;color:#ecd09b;border-radius:10px;
+  padding:12px 16px;margin:28px 0 0;font-size:13px;display:none}
+.guard.show{display:block}
 .note{color:var(--faint);font-size:12px;margin-top:10px}
 .foot{margin-top:44px;color:var(--faint);font-size:12px;border-top:1px solid var(--line);padding-top:16px}
 #tip{position:fixed;pointer-events:none;background:#000;border:1px solid var(--line);
@@ -93,6 +96,8 @@ h2{font-size:14px;font-weight:500;color:var(--dim);margin:36px 0 14px;
 
   <h2>在哪些程序里打字</h2>
   <div class="bars" id="apps"></div>
+
+  <div class="guard" id="guard"></div>
 
   <h2>本周该练</h2>
   <div class="advice" id="advice"></div>
@@ -199,6 +204,13 @@ $('apps').innerHTML = D.apps.slice(0, 8).map(a =>
    <span class="n">${num(a.keystrokes)}</span></div>`).join('')
   + `<div class="note">蓝色 = 能读到上屏文字；深色 = 读不到（只统计击键，不判对错）</div>`;
 
+const accPct = (1 - (B.typoRate || 0)) * 100;
+if ((B.typoRate || 0) > 0.05 && T.keystrokes > 0) {
+  const g = $('guard');
+  g.className = 'guard show';
+  g.textContent = `准确率护栏提醒：这段时间整体准确率 ${accPct.toFixed(1)}%（低于 95% 阈值），建议先放慢节奏保准，再加新键。`;
+}
+
 const ranked = D.keys.filter(k => k.weakScore !== null && k.weakScore > 0)
   .sort((a, b) => b.weakScore - a.weakScore);
 if (ranked.length === 0) {
@@ -208,9 +220,10 @@ if (ranked.length === 0) {
   const items = top.map(k => {
     const rate = (k.typoRate * 100).toFixed(1);
     const slow = k.ikiRatio.toFixed(1);
+    const speedNote = k.ikiRatio < 1.05 ? `速度正常（${slow}x）` : `速度是平均的 ${slow} 倍慢`;
     const fragile = k.presses < 60 ? '（样本只有 ' + k.presses + ' 次，先当参考）' : '';
     return `<li><code>${k.name}</code> 按了 ${num(k.presses)} 次，确认打错 ${num(k.typos)} 次（${rate}%），`
-      + `速度是平均的 ${slow} 倍慢 ${fragile}</li>`;
+      + `${speedNote} ${fragile}</li>`;
   }).join('');
   $('advice').innerHTML = `<div>下一步练这三个键：</div><ol>${items}</ol>`
     + `<div class="note">中文可以先生成练习串：<code>keytrace words</code>；英文导出给 keybr：<code>keytrace export --format keybr</code></div>`;

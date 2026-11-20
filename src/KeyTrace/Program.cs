@@ -121,6 +121,7 @@ internal static class Program
               --since <范围>     7d / 全部写 all / 起始日期 2026-11-01，默认 7d
               --pause-factor <n> 停顿门槛 = IKI 中位数 × n，默认 3
               --min-samples <n>  单键样本门槛，默认 20
+              --acc-threshold <n> 准确率护栏阈值（%），低于此值提醒，默认 95
 
             label 专用：
               --out <文件>       标注表，默认 %USERPROFILE%\.keytrace\labeling-日期.csv
@@ -281,6 +282,16 @@ internal static class Program
             return 1;
         }
 
+        double accThreshold = AccuracyGuard.DefaultThresholdPercent;
+        if (Value(args, "--acc-threshold") is string accText
+            && (!double.TryParse(accText, NumberStyles.Float, CultureInfo.InvariantCulture, out accThreshold)
+                || accThreshold <= 0
+                || accThreshold > 100))
+        {
+            Console.Error.WriteLine("--acc-threshold 需要 0 到 100 之间的数字，例如 95。");
+            return 1;
+        }
+
         (List<string> files, IEnumerable<EventRecord> stream, int rejected) = EventLog.Read(directory, since, today);
         List<EventRecord> events = [.. stream];
 
@@ -303,10 +314,23 @@ internal static class Program
         StatsBuilder.WriteJson(output, result, context);
         StatsBuilder.WriteTypos(typos, result);
 
+        AccuracyReport guard = AccuracyGuard.Evaluate(result, accThreshold);
+
         Console.WriteLine($"事件 {events.Count} 条（{files.Count} 个文件，跳过 {result.Skipped.Total + rejected} 条）");
         Console.WriteLine($"击键 {result.Totals.Keystrokes}，上屏 {result.Totals.Chars} 字，会话 {result.Totals.Sessions}");
         Console.WriteLine($"打错 {result.Totals.Typos}（拼音层 {result.Totals.PinyinErrors}），选字错 {result.Totals.SelectionErrors}，改措辞 {result.Totals.Rewording}");
         Console.WriteLine($"中文 {result.Chinese.Commits} 条上屏，带组字中间态 {CompCoverage(result)}");
+        Console.WriteLine($"准确率 {guard.AccuracyPercent:0.0}%（护栏阈值 {guard.ThresholdPercent:0.#}%）");
+        if (guard.Triggered)
+        {
+            Console.WriteLine($"! 准确率护栏触发：当前 {guard.AccuracyPercent:0.0}% 低于 {guard.ThresholdPercent:0.#}%，建议先放慢节奏保准。");
+            if (guard.TopErrorKeys.Count > 0)
+            {
+                Console.WriteLine("  错误最多的键：" + string.Join("  ",
+                    guard.TopErrorKeys.Select(k => $"{k.Name}({k.Typos}/{k.Presses}, {k.TypoRate * 100:0.0}%)")));
+            }
+        }
+
         Console.WriteLine();
         Console.WriteLine($"→ {output}");
         Console.WriteLine($"→ {typos}");

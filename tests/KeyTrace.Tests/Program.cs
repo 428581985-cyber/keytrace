@@ -28,6 +28,7 @@ internal static class Program
         CsvExportTests();
         ShuangpinTests();
         ZhSelectionTests();
+        AccuracyGuardTests();
         DashboardTests();
         DrillPageTests();
 
@@ -460,6 +461,39 @@ internal static class Program
         False("不引用任何外部资源", html.Contains("http://") || html.Contains("https://"));
         False("没有外链脚本或样式", html.Contains("src=") || html.Contains("@import"));
         True("中文界面", html.Contains("打字画像"));
+        True("包含准确率护栏提醒逻辑", html.Contains("准确率护栏提醒"));
+        True("速度正常时不误报倍慢", html.Contains("速度正常"));
+    }
+
+    private static void AccuracyGuardTests()
+    {
+        Section("准确率护栏");
+
+        AttributionResult empty = new();
+        AccuracyReport emptyReport = AccuracyGuard.Evaluate(empty, 95.0);
+        False("零击键不触发护栏", emptyReport.Triggered);
+        Eq("零击键准确率为 100%", "100", emptyReport.AccuracyPercent.ToString("0"));
+
+        AttributionResult healthy = new();
+        healthy.Totals.Keystrokes = 100;
+        healthy.Totals.Typos = 3;
+        healthy.Keys[67] = new KeyStat { Vk = 67, Presses = 40, Typos = 3 };
+        AccuracyReport healthyReport = AccuracyGuard.Evaluate(healthy, 95.0);
+        False("97% 准确率不触发 95% 护栏", healthyReport.Triggered);
+        Eq("健康准确率计算", "97", healthyReport.AccuracyPercent.ToString("0"));
+
+        AttributionResult sloppy = new();
+        sloppy.Totals.Keystrokes = 100;
+        sloppy.Totals.Typos = 8; // 92% < 95%
+        sloppy.Keys[90] = new KeyStat { Vk = 90, Presses = 20, Typos = 3 };
+        sloppy.Keys[67] = new KeyStat { Vk = 67, Presses = 25, Typos = 5 };
+        sloppy.Keys[86] = new KeyStat { Vk = 86, Presses = 15, Typos = 0 };
+        AccuracyReport sloppyReport = AccuracyGuard.Evaluate(sloppy, 95.0);
+        True("92% 准确率触发 95% 护栏", sloppyReport.Triggered);
+        Eq("准确率 92%", "92", sloppyReport.AccuracyPercent.ToString("0"));
+        Eq("错误键清单只收有错的键", "2", sloppyReport.TopErrorKeys.Count.ToString());
+        Eq("错得最多的 C 排第一", "C", sloppyReport.TopErrorKeys[0].Name);
+        Eq("Z 排第二", "Z", sloppyReport.TopErrorKeys[1].Name);
     }
 
     private static void DrillPageTests()
