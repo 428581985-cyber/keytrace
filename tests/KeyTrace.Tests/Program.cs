@@ -32,6 +32,7 @@ internal static class Program
         AccuracyGuardTests();
         DashboardTests();
         DrillPageTests();
+        DrillHistoryTests();
 
         Console.WriteLine();
         Console.WriteLine($"通过 {_passed}，失败 {_failed}");
@@ -539,13 +540,71 @@ internal static class Program
     {
         Section("练习页");
 
-        string html = DrillPage.Build("[{\"c\":\"便\",\"p\":\"bian\",\"k\":\"bm\"}]", "测试练习");
+        string html = DrillPage.Build("[{\"c\":\"便\",\"p\":\"bian\",\"k\":\"bm\"}]", "测试练习 <script>");
         True("题目被内嵌", html.Contains("\"k\":\"bm\""));
-        True("标题被替换", html.Contains("测试练习"));
+        True("标题被替换", html.Contains("测试练习 &lt;script&gt;"));
+        False("标题已转义", html.Contains("测试练习 <script>"));
         False("占位符已替换", html.Contains("__ITEMS__") || html.Contains("__TITLE__"));
         False("不引用任何外部资源", html.Contains("http://") || html.Contains("https://"));
         False("没有外链脚本或样式", html.Contains("src=") || html.Contains("@import"));
         True("练完能贴回结果", html.Contains("finishedAt"));
+        True("使用 Tab 切换提示不抢占 h 键", html.Contains("e.key === 'Tab'") && !html.Contains("e.key === 'h'"));
+        True("按错归因到目标键 want", html.Contains("stat(want).miss++") && !html.Contains("stat(ch).miss++"));
+        True("键盘样式限定在 .krow .k 避免污染卡片", html.Contains(".krow .k{") && !html.Contains("\n.k{"));
+        True("结算速度使用 correct 且防除零", html.Contains("elapsed > 0 ? Math.round(correct / (elapsed / 60000)) : 0"));
+        True("结算卡片渲染单位", html.Contains("<span class=\"u\">"));
+    }
+
+    private static void DrillHistoryTests()
+    {
+        Section("练习回流");
+
+        // 1. 解析校验
+        False("非法 JSON 拒绝解析", DrillHistory.TryParse("{bad", out _, out _));
+        False("缺少 keys 拒绝解析", DrillHistory.TryParse("{\"v\":1}", out _, out _));
+        False("未知版本拒绝解析", DrillHistory.TryParse("{\"v\":2,\"keys\":[]}", out _, out _));
+        False("非字母键拒绝解析", DrillHistory.TryParse("{\"v\":1,\"keys\":[{\"key\":\"1\",\"hit\":1,\"miss\":0}]}", out _, out _));
+
+        string sample = """
+            {"v":1,"finishedAt":"2026-11-20T10:00:00Z","total":20,"correct":18,"attempts":18,"elapsedMs":32000,"accuracy":85.0,"keys":[{"key":"C","hit":10,"miss":4},{"key":"V","hit":12,"miss":1}],"wrongChars":["好"]}
+            """;
+        True("合法结果解析成功", DrillHistory.TryParse(sample, out DrillRecord? parsed, out _));
+        Eq("键名规范化为小写", "c", parsed!.Keys[0].Key.ToString());
+        Eq("读取准确率", "85", parsed.Accuracy.ToString("0"));
+
+        // 2. 落盘与重载
+        string dir = Path.Combine(Path.GetTempPath(), "keytrace-drills-" + Guid.NewGuid().ToString("N")[..8]);
+        try
+        {
+            string older = """
+                {"v":1,"finishedAt":"2026-11-19T10:00:00Z","total":20,"correct":16,"attempts":16,"elapsedMs":40000,"accuracy":80.0,"keys":[{"key":"q","hit":10,"miss":4},{"key":"z","hit":25,"miss":0}],"wrongChars":["请"]}
+                """;
+            string newer = """
+                {"v":1,"finishedAt":"2026-11-20T12:00:00Z","total":20,"correct":19,"attempts":19,"elapsedMs":28000,"accuracy":92.0,"keys":[{"key":"c","hit":10,"miss":4},{"key":"z","hit":25,"miss":0}],"wrongChars":["好"]}
+                """;
+            (string path1, _) = DrillHistory.Save(dir, older);
+            (string path2, _) = DrillHistory.Save(dir, newer);
+            True("记录文件落盘", File.Exists(path1) && File.Exists(path2));
+
+            System.Collections.Generic.List<DrillRecord> recent = DrillHistory.LoadRecent(dir, 10);
+            Eq("重载记录数量", "2", recent.Count.ToString());
+            True("按完成时间倒序排列", recent[0].FinishedAt > recent[1].FinishedAt);
+
+            // z 键累计 50 次命中且 0 错（已稳定），即使 statsWeak 里排第一也应退出
+            System.Collections.Generic.List<char> rec = DrillHistory.RecommendWeakKeys(recent, ['z', 'p', 'x'], limit: 5);
+            True("近期错得多的 c 排进推荐", rec.Contains('c'));
+            True("旧场错得多的 q 也进推荐", rec.Contains('q'));
+            True("最近一场的 c 排在旧场的 q 前面（同等错误率按时间衰减）", rec.IndexOf('c') < rec.IndexOf('q'));
+            False("已稳定的 z 从推荐里退出", rec.Contains('z'));
+            True("不足 5 个时用未稳定的 stats 弱键补齐", rec.Contains('p') && rec.Contains('x'));
+        }
+        finally
+        {
+            if (Directory.Exists(dir))
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+        }
     }
 
     private static TypoRecord Rec(string kind, long ts) => new()

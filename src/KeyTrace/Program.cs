@@ -145,9 +145,11 @@ internal static class Program
               --out <文件>       默认 %USERPROFILE%\.keytrace\report.html
 
             drill 专用：
-              --weak <字母>      弱键，逗号分隔；不给就从 stats.json 取前五
+              --weak <字母>      弱键，逗号分隔；不给就结合练习记录与 stats.json 推荐
               --count <n>        练多少个字，默认 60
               --out <文件>       默认 %USERPROFILE%\.keytrace\drill.html
+              --drills <目录>    练习回流目录，默认 %USERPROFILE%\.keytrace\drills
+              --record <来源>    录入练完的 JSON（文件路径 / JSON 串 / - 从标准输入读）
 
             全部数据只存本地，不联网。
             """);
@@ -552,10 +554,28 @@ internal static class Program
         return true;
     }
 
-    /// <summary>生成练习页：一屏一个字，打小鹤双拼的两键。</summary>
+    /// <summary>生成练习页或录入练完的成绩：一屏一个字，打小鹤双拼的两键。</summary>
     private static int BuildDrill(string[] args)
     {
         ConsoleBridge.Attach();
+
+        string drillsDir = Value(args, "--drills") ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".keytrace",
+            "drills");
+
+        if (Value(args, "--record") is string recordArg)
+        {
+            if (!TryRecordDrill(drillsDir, recordArg))
+            {
+                return 1;
+            }
+
+            if (Value(args, "--out") is null)
+            {
+                return 0;
+            }
+        }
 
         int count = 60;
         if (Value(args, "--count") is string countText && (!int.TryParse(countText, out count) || count < 1))
@@ -573,13 +593,12 @@ internal static class Program
         }
         else
         {
-            weak = WeakKeysFromStats(out string note);
-            source = note;
+            weak = ResolveDrillWeakKeys(drillsDir, out source);
         }
 
         if (weak.Count == 0)
         {
-            Console.Error.WriteLine("没有弱键可用：先跑 keytrace stats，或者用 --weak c,v 手动指定。");
+            Console.Error.WriteLine("没有弱键可用：先跑 keytrace stats，或先用 --record 录入练习结果，或用 --weak c,v 手动指定。");
             return 1;
         }
 
@@ -606,9 +625,75 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine($"→ {output}");
         Console.WriteLine("双击打开，点一下页面，然后按键盘上对应的两个字母。");
-        Console.WriteLine("练完把页面底下那段结果贴回来，下次就能按表现出题。");
+        Console.WriteLine("练完把页面底部的 JSON 存下来，跑 keytrace drill --record <文件> 就能按表现出题。");
 
         return 0;
+    }
+
+    private static bool TryRecordDrill(string drillsDir, string recordArg)
+    {
+        string rawJson;
+        if (recordArg == "-")
+        {
+            rawJson = Console.In.ReadToEnd();
+        }
+        else if (recordArg.TrimStart().StartsWith('{'))
+        {
+            rawJson = recordArg;
+        }
+        else if (File.Exists(recordArg))
+        {
+            rawJson = File.ReadAllText(recordArg, System.Text.Encoding.UTF8);
+        }
+        else
+        {
+            Console.Error.WriteLine($"找不到练习结果文件：{recordArg}");
+            return false;
+        }
+
+        try
+        {
+            (string savedPath, DrillRecord record) = DrillHistory.Save(drillsDir, rawJson);
+            List<DrillRecord> recent = DrillHistory.LoadRecent(drillsDir);
+            List<char> statsWeak = WeakKeysFromStats(out _);
+            List<char> recommended = DrillHistory.RecommendWeakKeys(recent, statsWeak);
+
+            Console.WriteLine($"已保存练习结果 → {savedPath}");
+            Console.WriteLine($"本次：完成 {record.Correct}/{record.Total}，准确率 {record.Accuracy:0.0}%，用时 {record.ElapsedMs / 1000.0:0.0} 秒");
+            if (recommended.Count > 0)
+            {
+                Console.WriteLine($"更新后推荐弱键：{string.Join(' ', recommended.Select(char.ToUpperInvariant))}");
+            }
+
+            return true;
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException)
+        {
+            Console.Error.WriteLine($"录入失败：{ex.Message}");
+            return false;
+        }
+    }
+
+    private static List<char> ResolveDrillWeakKeys(string drillsDir, out string source)
+    {
+        List<char> statsWeak = WeakKeysFromStats(out string statsNote);
+        List<DrillRecord> recent = DrillHistory.LoadRecent(drillsDir);
+        List<char> recommended = DrillHistory.RecommendWeakKeys(recent, statsWeak);
+
+        if (recent.Count > 0 && statsWeak.Count > 0)
+        {
+            source = $"近 {recent.Count} 次练习回流 + {statsNote}";
+        }
+        else if (recent.Count > 0)
+        {
+            source = $"来自近 {recent.Count} 次练习回流";
+        }
+        else
+        {
+            source = statsNote;
+        }
+
+        return recommended;
     }
 
     private static string BuildDrillItems(List<HanziEntry> picked)

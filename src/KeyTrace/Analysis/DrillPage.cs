@@ -4,27 +4,32 @@ using System.Text;
 namespace KeyTrace.Analysis;
 
 /// <summary>
-/// 生成单文件练习页：一屏一个字，打它的小鹤双拼两键，错了当场标红，练完给成绩。
+/// 生成单文件练习页，界面按 keybr 的布局来：
+/// 顶部实时速度/准确率 → 一屏一行字、逐字上色 → 底部键盘高亮下一个该按的键。
 ///
-/// 为什么不用输入法：这里练的是"这个字该按哪两个键"，不是选字。让输入法参与，
-/// 键位信息就被它吞掉了，成绩也没法归因到具体的键。
-/// 练完把结果贴回来，才有"下次出什么"的依据——动态调整的前提是成绩能回流。
+/// 只借布局与交互，不搬它的代码：keybr.com 是 AGPL-3.0，把代码拿进来整个项目
+/// 都得跟着换许可；而且它是 Node 全栈，做不到"双击就开"。
+///
+/// 练的是键不是选字：不让输入法参与，否则按键被 IME 吞掉，成绩没法归因到具体键。
 /// </summary>
 internal static class DrillPage
 {
     public static void Write(string outputPath, string itemsJson, string title)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath))!);
-        string html = Template
-            .Replace("/*__ITEMS__*/", itemsJson, StringComparison.Ordinal)
-            .Replace("__TITLE__", title, StringComparison.Ordinal);
-
-        File.WriteAllText(outputPath, html, new UTF8Encoding(false));
+        File.WriteAllText(outputPath, Build(itemsJson, title), new UTF8Encoding(false));
     }
 
     internal static string Build(string itemsJson, string title) => Template
         .Replace("/*__ITEMS__*/", itemsJson, StringComparison.Ordinal)
-        .Replace("__TITLE__", title, StringComparison.Ordinal);
+        .Replace("__TITLE__", EscapeHtml(title), StringComparison.Ordinal);
+
+    private static string EscapeHtml(string text) => text
+        .Replace("&", "&amp;", StringComparison.Ordinal)
+        .Replace("<", "&lt;", StringComparison.Ordinal)
+        .Replace(">", "&gt;", StringComparison.Ordinal)
+        .Replace("\"", "&quot;", StringComparison.Ordinal)
+        .Replace("'", "&#39;", StringComparison.Ordinal);
 
     private const string Template = """
 <!DOCTYPE html>
@@ -34,79 +39,85 @@ internal static class DrillPage
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>__TITLE__</title>
 <style>
-:root{--bg:#161616;--panel:#1f1f1f;--line:#2e2e2e;--text:#e8e6e3;--dim:#9a968f;--faint:#6b675f;
-  --red:#d4503a;--green:#5ba36f;--blue:#4a7fb5}
+:root{--bg:#111111;--panel:#1a1a1a;--line:#2a2a2a;--text:#e8e6e3;--dim:#8c8880;--faint:#5d5a54;
+  --red:#d4503a;--green:#5ba36f;--blue:#4a7fb5;--cur:#2b2b2b}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);min-height:100vh;
-  font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
-  display:flex;flex-direction:column;align-items:center;justify-content:flex-start;
-  padding:28px 20px 40px;user-select:none}
-.top{width:100%;max-width:760px;display:flex;justify-content:space-between;
-  align-items:baseline;color:var(--dim);font-size:13px;margin-bottom:10px}
-.progress{width:100%;max-width:760px;height:3px;background:#262626;border-radius:2px;overflow:hidden}
-.progress > i{display:block;height:100%;width:0;background:var(--blue);transition:width .15s}
-.stage{flex:1;width:100%;max-width:760px;display:flex;flex-direction:column;
-  align-items:center;justify-content:center;gap:6px;padding:40px 0 20px}
-.hz{font-size:104px;line-height:1.1;font-weight:400;letter-spacing:.04em;
-  font-family:"Songti SC","SimSun",serif;transition:color .12s}
-.hz.ok{color:var(--green)}
-.hz.bad{color:var(--red)}
-.py{color:var(--dim);font-size:15px;letter-spacing:.08em}
-.code{font-size:22px;letter-spacing:.35em;color:var(--blue);font-variant-numeric:tabular-nums;
-  min-height:30px;font-family:ui-monospace,Consolas,monospace}
-.code.bad{color:var(--red)}
-.code.hidden{visibility:hidden}
-.slots{display:flex;gap:10px;margin-top:6px}
-.slot{width:44px;height:44px;border-radius:8px;border:1px solid var(--line);
-  display:flex;align-items:center;justify-content:center;font-size:20px;
-  font-family:ui-monospace,Consolas,monospace;color:var(--dim)}
-.slot.filled{background:#243027;color:var(--text);border-color:#3a5343}
-.slot.wrong{background:#3a201b;border-color:#7a3a2e;color:#f1a898}
-.hint{color:var(--faint);font-size:12px;margin-top:18px;text-align:center;line-height:1.8}
-button{background:#262626;color:var(--text);border:1px solid var(--line);border-radius:8px;
-  padding:7px 14px;font-size:13px;cursor:pointer;font-family:inherit}
-button:hover{background:#2e2e2e}
-.controls{display:flex;gap:10px;margin-top:18px}
-.summary{display:none;width:100%;max-width:760px}
+  font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;user-select:none;
+  display:flex;flex-direction:column;align-items:center}
+.bar{width:100%;max-width:900px;display:flex;justify-content:space-between;align-items:center;
+  padding:16px 24px;font-size:12px;color:var(--dim);letter-spacing:.02em}
+.bar b{color:var(--text);font-weight:500;font-size:15px;font-variant-numeric:tabular-nums}
+.sep{color:var(--faint);margin:0 10px}
+.progress{width:100%;height:2px;background:#202020}
+.progress > i{display:block;height:100%;width:0;background:var(--blue);transition:width .12s}
+.stage{width:100%;max-width:900px;padding:56px 24px 0;min-height:260px}
+.line{font-size:44px;line-height:1.5;letter-spacing:.02em;font-family:"Songti SC","SimSun",serif;
+  display:flex;flex-wrap:wrap;align-items:baseline}
+.c{position:relative;padding:2px 1px;color:var(--faint);transition:color .1s}
+.c.done{color:#6f9a7c}
+.c.err{color:var(--red)}
+.c.cur{color:var(--text);background:var(--cur);border-radius:4px}
+.c.cur::after{content:"";position:absolute;left:2px;right:2px;bottom:-2px;height:2px;background:var(--blue)}
+.sub{margin-top:10px;height:24px;font-size:14px;color:var(--dim);letter-spacing:.06em}
+.sub em{color:var(--blue);font-style:normal;font-family:ui-monospace,Consolas,monospace;letter-spacing:.25em}
+.sub.bad em{color:var(--red)}
+.kbd{width:100%;max-width:900px;padding:26px 24px 8px}
+.krow{display:flex;gap:5px;margin-bottom:5px;justify-content:center}
+.krow .k{width:38px;height:38px;border-radius:6px;background:#1d1d1d;border:1px solid var(--line);
+  display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--dim);
+  font-family:ui-monospace,Consolas,monospace;transition:background .08s,border-color .08s}
+.krow .k.next{background:#1d3040;border-color:var(--blue);color:#a8cbe8}
+.krow .k.hit{background:#243027;border-color:var(--green);color:#a9d3b8}
+.krow .k.miss{background:#3a201b;border-color:var(--red);color:#f0a898}
+.krow .k.blank{background:transparent;border-color:transparent}
+.controls{display:flex;gap:10px;align-items:center;margin:6px 0 30px;color:var(--dim);font-size:12px}
+button{background:#202020;color:var(--text);border:1px solid var(--line);border-radius:7px;
+  padding:6px 12px;font-size:12px;cursor:pointer;font-family:inherit}
+button:hover{background:#282828}
+.stage.done{display:none}
+.summary{display:none;width:100%;max-width:900px;padding:40px 24px 60px}
 .summary.show{display:block}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:16px 0}
+h2{font-size:16px;font-weight:500;margin:0 0 14px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:18px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
 .card .k{color:var(--dim);font-size:12px}
 .card .v{font-size:22px;font-weight:500;font-variant-numeric:tabular-nums}
-table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
+.card .u{font-size:12px;color:var(--faint);margin-left:3px}
+table{width:100%;border-collapse:collapse;font-size:13px}
 th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
 th{color:var(--dim);font-weight:400}
 td.num{text-align:right;font-variant-numeric:tabular-nums}
-textarea{width:100%;height:120px;background:#1a1a1a;color:var(--dim);border:1px solid var(--line);
-  border-radius:8px;padding:10px;font-family:ui-monospace,Consolas,monospace;font-size:12px;margin-top:10px}
-.badge{display:inline-block;background:#243027;color:#8fbf9f;border-radius:4px;padding:1px 6px;font-size:11px}
+textarea{width:100%;height:110px;background:#161616;color:var(--dim);border:1px solid var(--line);
+  border-radius:8px;padding:10px;font-family:ui-monospace,Consolas,monospace;font-size:12px;margin-top:8px}
+.note{color:var(--faint);font-size:12px;margin-top:10px}
 </style>
 </head>
 <body>
-<div class="top">
-  <span id="title"></span>
-  <span id="counter"></span>
+<div class="bar">
+  <span>__TITLE__</span>
+  <span><b id="wpm">0</b> 字/分<span class="sep">·</span><b id="acc">100</b>% 准确<span class="sep">·</span><span id="counter">0 / 0</span></span>
 </div>
 <div class="progress"><i id="bar"></i></div>
 
 <div class="stage" id="stage">
-  <div class="hz" id="hz">·</div>
-  <div class="py" id="py"></div>
-  <div class="code" id="code"></div>
-  <div class="slots"><div class="slot" id="s0"></div><div class="slot" id="s1"></div></div>
-  <div class="hint" id="hint">点一下页面，然后按键盘上对应的两个字母<br>Esc 跳过这个字 · H 显示/隐藏双拼码</div>
+  <div class="line" id="line"></div>
+  <div class="sub" id="sub"></div>
+  <div class="kbd"><div id="kbd"></div></div>
   <div class="controls">
-    <button id="toggle">隐藏双拼码</button>
-    <button id="reset">重来</button>
+    <button id="toggle" type="button">隐藏双拼码</button>
+    <button id="reset" type="button">重来</button>
+    <span>点一下页面再按键 · Tab 切换提示 · Esc 跳过</span>
   </div>
 </div>
 
 <div class="summary" id="summary">
-  <h2 style="font-size:16px;font-weight:500;margin:26px 0 0">练完了</h2>
+  <h2>练完了</h2>
   <div class="cards" id="cards"></div>
   <div id="keytable"></div>
-  <div style="margin-top:14px;color:var(--dim);font-size:12px">
-    把下面这段贴回给我，下次就能按这次的表现出题：
+  <div class="note" style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+    <span>把下面这段贴回给我（或跑 <code>keytrace drill --record -</code>），下次就能按这次的表现出题：</span>
+    <button id="copy" type="button">复制结果</button>
   </div>
   <textarea id="result" readonly></textarea>
 </div>
@@ -114,143 +125,226 @@ textarea{width:100%;height:120px;background:#1a1a1a;color:var(--dim);border:1px 
 <script>
 const ITEMS = /*__ITEMS__*/;
 const $ = (id) => document.getElementById(id);
-const mode = location.hash === '#noshow' ? 'hidden' : 'show';
 
-let index = 0, buf = '', showAt = 0, lastAt = 0, startedAt = 0;
-let correct = 0, wrongChars = [];
-let hideCode = false;
-const keyStats = {};
-const records = [];
+let idx = 0, step = 0, showAt = 0, startedAt = 0, hideCode = false;
+let attempts = 0, correct = 0;
+const status = [];          // 每个字: 'todo' | 'done' | 'err'
+const keyStats = {};        // 键 -> {hit, miss}
+const wrongChars = [];
 
-function stat(k) {
-  if (!keyStats[k]) keyStats[k] = { hit: 0, miss: 0 };
-  return keyStats[k];
+const rows = ['qwertyuiop', 'asdfghjkl', 'zxcvbnm'];
+const kbdEls = {};
+const flashTimers = {};
+let subTimer = null;
+
+function stat(k) { return keyStats[k] || (keyStats[k] = { hit: 0, miss: 0 }); }
+function current() { return ITEMS[idx]; }
+
+function buildKeyboard() {
+  for (const r of rows) {
+    const row = document.createElement('div');
+    row.className = 'krow';
+    for (const ch of r) {
+      const d = document.createElement('div');
+      d.className = 'k';
+      d.textContent = ch.toUpperCase();
+      kbdEls[ch] = d;
+      row.appendChild(d);
+    }
+    $('kbd').appendChild(row);
+  }
 }
 
-function current() { return ITEMS[index]; }
+function clearNext() {
+  for (const el of Object.values(kbdEls)) el.classList.remove('next');
+}
+
+function renderLine() {
+  const from = Math.max(0, idx - 4);
+  const to = Math.min(ITEMS.length, from + 14);
+  const html = [];
+  for (let i = from; i < to; i++) {
+    let cls = 'c';
+    if (i === idx) cls += ' cur';
+    else if (status[i] === 'done') cls += ' done';
+    else if (status[i] === 'err') cls += ' err';
+    html.push(`<span class="${cls}">${ITEMS[i].c}</span>`);
+  }
+  $('line').innerHTML = html.join('');
+}
+
+function renderHint() {
+  const it = current();
+  if (!it) return;
+  const code = it.k[0] + '  ' + it.k[1];
+  $('sub').className = 'sub';
+  $('sub').innerHTML = `${it.p} · <em>${hideCode ? '?&nbsp;&nbsp;?' : code}</em>`;
+}
+
+function toggleHint() {
+  hideCode = !hideCode;
+  $('toggle').textContent = hideCode ? '显示双拼码' : '隐藏双拼码';
+  renderHint();
+}
+
+function markNext() {
+  clearNext();
+  const it = current();
+  if (!it) return;
+  const ch = it.k[step];
+  if (kbdEls[ch]) kbdEls[ch].classList.add('next');
+}
+
+function flash(ch, cls) {
+  const el = kbdEls[ch];
+  if (!el) return;
+  if (flashTimers[ch]) clearTimeout(flashTimers[ch]);
+  el.classList.remove('hit', 'miss');
+  el.classList.add(cls);
+  flashTimers[ch] = setTimeout(() => {
+    el.classList.remove(cls);
+    delete flashTimers[ch];
+  }, 160);
+}
 
 function render() {
   const it = current();
   if (!it) return finish();
-  $('hz').className = 'hz';
-  $('hz').textContent = it.c;
-  $('py').textContent = it.p;
-  $('code').textContent = it.k[0] + '  ' + it.k[1];
-  $('code').className = 'code' + (hideCode ? ' hidden' : '');
-  $('s0').textContent = ''; $('s1').textContent = '';
-  $('s0').className = 'slot'; $('s1').className = 'slot';
-  $('counter').textContent = (index + 1) + ' / ' + ITEMS.length;
-  $('bar').style.width = (index / ITEMS.length * 100) + '%';
-  buf = '';
+  status[idx] = status[idx] || 'todo';
+  renderLine();
+  renderHint();
+  markNext();
+  $('counter').textContent = (idx + 1) + ' / ' + ITEMS.length;
+  $('bar').style.width = (idx / ITEMS.length * 100) + '%';
+  step = 0;
   showAt = performance.now();
 }
 
-function advance() {
-  index++;
+function advance(ok) {
+  status[idx] = ok ? 'done' : 'err';
+  idx++;
   render();
+  updateMetrics();
 }
 
-function pressSlot(i, ch, ok) {
-  const el = $('s' + i);
-  el.textContent = ch;
-  el.className = 'slot ' + (ok ? 'filled' : 'wrong');
+function updateMetrics() {
+  const used = startedAt ? (performance.now() - startedAt) : 0;
+  $('wpm').textContent = used > 800 ? Math.round(correct / (used / 60000)) : 0;
+  $('acc').textContent = Math.round(accuracy() * 100);
+}
+
+// 准确率按"按键"算，不按"字数"算：一个字按错三次再按对，准确率就该难看，
+// 否则每次错都白错了。
+function accuracy() {
+  let hit = 0, miss = 0;
+  for (const s of Object.values(keyStats)) { hit += s.hit; miss += s.miss; }
+  return hit + miss === 0 ? 1 : hit / (hit + miss);
 }
 
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') { e.preventDefault(); advance(); return; }
-  if (e.key === 'h' || e.key === 'H') { hideCode = !hideCode; $('code').className = 'code' + (hideCode ? ' hidden' : ''); return; }
+  const it = current();
+  if (!it) return;
   if (e.ctrlKey || e.altKey || e.metaKey) return;
+  if (e.key === 'Escape') { e.preventDefault(); attempts++; advance(false); return; }
+  if (e.key === 'Tab') { e.preventDefault(); toggleHint(); return; }
 
   const ch = e.key.toLowerCase();
   if (!/^[a-z]$/.test(ch)) return;
   e.preventDefault();
 
-  const it = current();
-  if (!it) return;
   if (!startedAt) startedAt = performance.now();
 
-  if (buf.length === 0) {
-    buf = ch;
-    lastAt = performance.now();
-    pressSlot(0, ch, ch === it.k[0]);
-    if (ch !== it.k[0]) stat(ch).miss++;
-    return;
-  }
-
-  buf += ch;
-  const ok = buf === it.k;
-  pressSlot(1, ch, ch === it.k[1]);
-  const elapsed = Math.round(performance.now() - showAt);
-
-  if (ok) {
-    correct++;
-    $('hz').className = 'hz ok';
-    stat(it.k[0]).hit++;
-    stat(it.k[1]).hit++;
-    records.push({ c: it.c, k: it.k, ms: elapsed, ok: true });
-    setTimeout(advance, 90);
+  const want = it.k[step];
+  if (ch === want) {
+    if (subTimer) { clearTimeout(subTimer); subTimer = null; }
+    $('sub').className = 'sub';
+    stat(ch).hit++;
+    flash(ch, 'hit');
+    step++;
+    showAt = performance.now();
+    if (step >= 2) {
+      attempts++; correct++;
+      advance(true);
+    } else {
+      markNext();
+    }
   } else {
-    if (ch !== it.k[1]) stat(ch).miss++;
-    $('hz').className = 'hz bad';
-    $('code').className = 'code bad';
-    wrongChars.push(it.c);
-    records.push({ c: it.c, k: it.k, got: buf, ms: elapsed, ok: false });
-    setTimeout(advance, 420);
+    stat(want).miss++;
+    flash(ch, 'miss');
+    if (subTimer) clearTimeout(subTimer);
+    $('sub').className = 'sub bad';
+    // 按错就重来这个字的第一个键，不往前走——keybr 也是这个规矩
+    step = 0;
+    showAt = performance.now();
+    markNext();
+    subTimer = setTimeout(() => { $('sub').className = 'sub'; subTimer = null; }, 260);
+    if (!wrongChars.includes(it.c)) wrongChars.push(it.c);
   }
+  updateMetrics();
 });
 
-function keyName(k) { return k.toUpperCase(); }
-
 function finish() {
-  $('stage').style.display = 'none';
+  clearNext();
+  $('stage').classList.add('done');
   $('bar').style.width = '100%';
-  $('counter').textContent = ITEMS.length + ' / ' + ITEMS.length;
   const total = ITEMS.length;
   const elapsed = startedAt ? Math.round(performance.now() - startedAt) : 0;
-  const accuracy = total ? (correct / total * 100) : 0;
-  const cpm = elapsed > 0 ? (correct * 2 / (elapsed / 60000)) : 0;
+  const acc = accuracy() * 100;
+  const speed = elapsed > 0 ? Math.round(correct / (elapsed / 60000)) : 0;
 
   $('cards').innerHTML = [
-    ['正确', correct + ' / ' + total, ''],
-    ['正确率', accuracy.toFixed(0) + '%', ''],
+    ['完成', correct + ' / ' + total, '字'],
+    ['准确率', acc.toFixed(0) + '%', ''],
     ['用时', (elapsed / 1000).toFixed(0), '秒'],
-    ['速度', cpm.toFixed(0), '键/分'],
-  ].map(([k, v]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
+    ['速度', String(speed), '字/分'],
+  ].map(([k, v, u]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}${u ? '<span class="u">' + u + '</span>' : ''}</div></div>`).join('');
 
-  const rows = Object.entries(keyStats)
-    .filter(([, s]) => s.miss > 0)
+  const bad = Object.entries(keyStats).filter(([, s]) => s.miss > 0)
     .sort((a, b) => b[1].miss - a[1].miss);
 
-  $('keytable').innerHTML = rows.length === 0
-    ? '<div style="color:#8fbf9f">这次没有按错任何键。</div>'
-    : '<table><tr><th>键</th><th class="num">按对</th><th class="num">按错</th></tr>'
-      + rows.map(([k, s]) => `<tr><td>${keyName(k)}</td><td class="num">${s.hit}</td>`
-        + `<td class="num" style="color:#e08a78">${s.miss}</td></tr>`).join('')
-      + '</table>';
+  $('keytable').innerHTML = bad.length === 0
+    ? '<div style="color:#6f9a7c">这次没有按错任何键。</div>'
+    : '<table><tr><th>键</th><th class="num">按对</th><th class="num">按错</th><th class="num">错误率</th></tr>'
+      + bad.map(([k, s]) => {
+          const t = s.hit + s.miss;
+          return `<tr><td>${k.toUpperCase()}</td><td class="num">${s.hit}</td>`
+            + `<td class="num" style="color:#e08a78">${s.miss}</td>`
+            + `<td class="num">${(s.miss / t * 100).toFixed(0)}%</td></tr>`;
+        }).join('') + '</table>';
 
-  const payload = {
+  $('result').value = JSON.stringify({
     v: 1,
     finishedAt: new Date().toISOString(),
     total: total,
     correct: correct,
+    attempts: attempts,
     elapsedMs: elapsed,
-    accuracy: Number(accuracy.toFixed(1)),
+    accuracy: Number(acc.toFixed(1)),
     keys: Object.entries(keyStats).map(([k, s]) => ({ key: k, hit: s.hit, miss: s.miss })),
     wrongChars: wrongChars,
-  };
-  $('result').value = JSON.stringify(payload, null, 0);
+  });
   $('summary').classList.add('show');
 }
 
-$('toggle').onclick = () => {
-  hideCode = !hideCode;
-  $('code').className = 'code' + (hideCode ? ' hidden' : '');
-  $('toggle').textContent = hideCode ? '显示双拼码' : '隐藏双拼码';
-};
+$('toggle').onclick = toggleHint;
 $('reset').onclick = () => location.reload();
+$('copy').onclick = () => {
+  const text = $('result').value;
+  const btn = $('copy');
+  const done = () => { btn.textContent = '已复制'; setTimeout(() => { btn.textContent = '复制结果'; }, 1200); };
+  function fallback() {
+    $('result').select();
+    try { document.execCommand('copy'); } catch {}
+    done();
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done, fallback);
+  } else {
+    fallback();
+  }
+};
 
-const weak = [...new Set(ITEMS.flatMap(i => i.k.split('')))].sort();
-$('title').textContent = `${ITEMS.length} 个字 · 覆盖 ${weak.map(k=>k.toUpperCase()).join(' ')} · 小鹤双拼`;
+buildKeyboard();
 render();
 </script>
 </body>
