@@ -55,3 +55,16 @@ Wobbrock & Myers (2006)
 
 keylogger 类项目（KeyStroke Monitor 等）
   用途    : 只用于对照"退格占比 8–25% 属人类正常范围"这一区间，未使用其代码。
+
+
+词组拼音（中文双拼词表用）
+--------------------------
+
+词组拼音
+  文件    : pinyin.txt（词组 → 带声调读音，含多音字消歧，约 4.7 万条）
+  许可    : MIT
+  版权人  : mozillazg 及贡献者
+  来源    : https://github.com/mozillazg/phrase-pinyin-data
+  说明    : tools/gen_zh_words.py 生成 words-zh-sp.json 时按词取音，避免逐字
+            查表把多音字读错（如「银行」应为 yín háng 而非 yín xíng）。
+            仅构建时读取，不把该数据复制进本仓库。
