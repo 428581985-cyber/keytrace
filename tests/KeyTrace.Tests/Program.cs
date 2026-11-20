@@ -25,6 +25,7 @@ internal static class Program
         WeakScoreTests();
         LabelExportTests();
         KeybrExportTests();
+        CsvExportTests();
         ShuangpinTests();
         ZhSelectionTests();
         DashboardTests();
@@ -363,6 +364,37 @@ internal static class Program
         AttributionResult empty = new();
         days = [(new DateOnly(2026, 11, 16), empty)];
         Eq("没有击键的天不导出", "[]", KeybrExport.Build(days).Replace(" ", "").Replace("\n", "").Replace("\r", ""));
+    }
+
+    private static void CsvExportTests()
+    {
+        Section("csv 导出");
+
+        AttributionResult empty = new();
+        string emptyCsv = CsvExport.Build(empty);
+        string[] emptyLines = emptyCsv.Split("\r\n", StringSplitOptions.RemoveEmptyEntries);
+        Eq("空数据只输出表头", "1", emptyLines.Length.ToString());
+        Eq("表头 15 列", "15", emptyLines[0].Split(',').Length.ToString());
+
+        AttributionResult res = new()
+        {
+            Baseline = new Baseline { GlobalP50 = 200, PauseFactor = 3.0 },
+        };
+        KeyStat a = new() { Vk = 65, Presses = 40, Shifted = 5, Typos = 4, TyposUnreplaced = 1, PinyinTypos = 2 };
+        a.Iki.AddRange([200, 300, 400]);
+        a.Dwell.AddRange([80, 100]);
+        KeyStat comma = new() { Vk = 188, Presses = 10, Typos = 1 }; // 样本不足 20，weakScore 应为空
+        comma.Iki.Add(250);
+        res.Keys[188] = comma;
+        res.Keys[65] = a;
+
+        string csv = CsvExport.Build(res, minKeySamples: 20);
+        string[] lines = csv.Split("\r\n", StringSplitOptions.RemoveEmptyEntries);
+        Eq("导出表头加两行数据", "3", lines.Length.ToString());
+        True("按 vk 升序，A(65) 在前", lines[1].StartsWith("65,A,letter,40,5,4,1,2,0.1,", StringComparison.Ordinal));
+        True("A 有弱键分数且末尾非空", !lines[1].EndsWith(",", StringComparison.Ordinal));
+        True("逗号键名被引号包住", lines[2].StartsWith("188,\",\",symbol,", StringComparison.Ordinal));
+        True("样本不足时 weakScore 留空", lines[2].EndsWith(",", StringComparison.Ordinal));
     }
 
     private static void ShuangpinTests()

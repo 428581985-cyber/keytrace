@@ -51,6 +51,37 @@ keybr-tui 是终端版、MIT、离线可用，GitHub Releases 有 Windows 预编
 
 ---
 
+### `csv`
+
+```bash
+keytrace export --format csv --out keys.csv
+keytrace export --format csv --since all --min-samples 20
+```
+
+按 `vk` 升序导出逐键统计表（UTF-8 带 BOM、CRLF 换行），Windows 下双击可直接用 Excel 打开，也可直接喂给 pandas / R 做切片分析。
+
+固定 15 列：
+
+```
+vk,name,role,presses,shifted,typos,typosUnreplaced,pinyinTypos,typoRate,ikiMeanMs,ikiP50Ms,ikiP90Ms,dwellMeanMs,ikiRatio,weakScore
+```
+
+- 含 `,` 或 `"` 的键名（如 `,`）按 RFC-4180 用双引号包裹
+- `weakScore` 为 `null`（样本不足或零错误）时输出空单元格
+- 支持 `--in`、`--since`、`--pause-factor`、`--min-samples`
+
+---
+
+### `json`
+
+```bash
+keytrace export --format json --out stats.json
+```
+
+复用 `StatsBuilder.WriteJson` 输出与 `keytrace stats` 同构的完整统计 JSON（字段口径见 `docs/stats-schema.md`），适合脚本或自定义看板直接消费，但不另写 `typos.jsonl`。
+
+---
+
 ## 怎么新增一种格式
 
 1. 在 `src/KeyTrace/Analysis/` 下新建 `XxxExport.cs`，提供 `Build(...)` 返回字符串 + `Write(path, json)`

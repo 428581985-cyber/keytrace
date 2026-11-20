@@ -101,7 +101,7 @@ internal static class Program
               collect    前台录制，调试用，Ctrl+C 结束
               stats      把 events.jsonl 归因成 stats.json 与 typos.jsonl
               label      导出金标标注表，人工打勾后用来校准判定规则
-              export     把统计翻译成别人的格式（目前支持 keybr）
+              export     把统计翻译成别人的格式（支持 keybr / csv / json）
               words      按弱键生成中文练习串
               dashboard  生成单文件 HTML 看板，双击就开
               drill      生成单文件练习页，一屏一个字，练完给成绩
@@ -129,8 +129,9 @@ internal static class Program
               --anonymize        去掉文字、应用、时间，只留结构特征（准备公开时用）
 
             export 专用：
-              --format <名字>    目标格式，目前只有 keybr
-              --out <文件>       默认 %USERPROFILE%\.keytrace\typing-data.json
+              --format <名字>    目标格式：keybr / csv / json（默认 keybr）
+              --out <文件>       默认 typing-data.json / keys.csv / stats.json
+              --in / --since / --pause-factor / --min-samples  同 stats
 
             words 专用：
               --weak <字母>      弱键，逗号分隔，如 c,v,f；不给就从 stats.json 取前五
@@ -275,19 +276,8 @@ internal static class Program
             return 1;
         }
 
-        double pauseFactor = 3.0;
-        if (Value(args, "--pause-factor") is string factorText
-            && !double.TryParse(factorText, NumberStyles.Float, CultureInfo.InvariantCulture, out pauseFactor))
+        if (!TryParseAttributionArgs(args, out double pauseFactor, out int minSamples))
         {
-            Console.Error.WriteLine("--pause-factor 需要一个小数，例如 3。");
-            return 1;
-        }
-
-        int minSamples = 20;
-        if (Value(args, "--min-samples") is string sampleText
-            && !int.TryParse(sampleText, NumberStyles.Integer, CultureInfo.InvariantCulture, out minSamples))
-        {
-            Console.Error.WriteLine("--min-samples 需要一个整数，例如 20。");
             return 1;
         }
 
@@ -308,17 +298,7 @@ internal static class Program
 
         AttributionResult result = new Attributor(options).Run(events, rejected);
 
-        StatsContext context = new()
-        {
-            Directory = directory,
-            Files = files,
-            Events = events.Count,
-            From = since ?? EarliestFileDate(files) ?? today,
-            To = today,
-            PauseFactor = pauseFactor,
-            TypoMaxBackspaces = options.TypoMaxBackspaces,
-            MinKeySamples = minSamples,
-        };
+        StatsContext context = MakeStatsContext(directory, files, events.Count, since, today, options);
 
         StatsBuilder.WriteJson(output, result, context);
         StatsBuilder.WriteTypos(typos, result);
@@ -406,15 +386,15 @@ internal static class Program
         return 0;
     }
 
-    /// <summary>导出成 keybr-tui 能导入的格式：一天一个 session，逐键 hit/miss/耗时。</summary>
+    /// <summary>导出成外部工具或表格能直接使用的格式（keybr / csv / json）。</summary>
     private static int ExportData(string[] args)
     {
         ConsoleBridge.Attach();
 
-        string format = Value(args, "--format") ?? "keybr";
-        if (format != "keybr")
+        string format = (Value(args, "--format") ?? "keybr").ToLowerInvariant();
+        if (format is not ("keybr" or "csv" or "json"))
         {
-            Console.Error.WriteLine($"不认识的格式：{format}。目前只支持 keybr。");
+            Console.Error.WriteLine($"不认识的格式：{format}。目前支持 keybr / csv / json。");
             return 1;
         }
 
@@ -427,10 +407,25 @@ internal static class Program
             return 1;
         }
 
+        if (!TryParseAttributionArgs(args, out double pauseFactor, out int minSamples))
+        {
+            return 1;
+        }
+
+        string defaultFile = format switch
+        {
+            "csv" => "keys.csv",
+            "json" => "stats.json",
+            _ => "typing-data.json",
+        };
         string output = Value(args, "--out") ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
             ".keytrace",
-            "typing-data.json");
+            defaultFile);
+        if (Directory.Exists(output))
+        {
+            output = Path.Combine(output, defaultFile);
+        }
 
         (List<string> files, IEnumerable<EventRecord> stream, int rejected) = EventLog.Read(directory, since, today);
         List<EventRecord> events = [.. stream];
@@ -440,32 +435,96 @@ internal static class Program
             return 1;
         }
 
-        // 一天一个 session：keybr 的一次练习就是这么定义的，把两个月合成一个 session
-        // 会让"这一课练完的进步"完全看不出来。
-        List<(DateOnly Day, AttributionResult Result)> days = [];
-        foreach (IGrouping<DateOnly, EventRecord> group in events.GroupBy(DayOf))
+        AttributorOptions options = new()
         {
-            days.Add((group.Key, new Attributor().Run([.. group], rejected)));
+            PauseFactor = pauseFactor,
+            MinKeySamples = minSamples,
+        };
+
+        if (format == "keybr")
+        {
+            // 一天一个 session：keybr 的一次练习就是这么定义的，把两个月合成一个 session
+            // 会让"这一课练完的进步"完全看不出来。
+            List<(DateOnly Day, AttributionResult Result)> days = [];
+            foreach (IGrouping<DateOnly, EventRecord> group in events.GroupBy(DayOf))
+            {
+                days.Add((group.Key, new Attributor(options).Run([.. group], rejected)));
+            }
+
+            days.Sort((a, b) => a.Day.CompareTo(b.Day));
+
+            string json = KeybrExport.Build(days);
+            KeybrExport.Write(output, json);
+
+            int sessions = days.Count(d => KeybrExport.KeysOf(d.Result).Count > 0);
+            int keys = days.SelectMany(d => KeybrExport.KeysOf(d.Result)).Select(k => k.CodePoint).Distinct().Count();
+
+            Console.WriteLine($"事件 {events.Count} 条（{files.Count} 个文件），{days.Count} 天");
+            Console.WriteLine($"导出 {sessions} 个 session，覆盖 {keys} 个字母/数字键");
+            Console.WriteLine();
+            Console.WriteLine($"→ {output}");
+            Console.WriteLine();
+            Console.WriteLine("导入 keybr-tui：");
+            Console.WriteLine($"  keybr-tui --import \"{output}\"");
+            Console.WriteLine("（会先备份本地统计；加 --force 才覆盖）");
+            return 0;
         }
 
-        days.Sort((a, b) => a.Day.CompareTo(b.Day));
+        AttributionResult result = new Attributor(options).Run(events, rejected);
+        if (format == "csv")
+        {
+            string csv = CsvExport.Build(result, minSamples);
+            CsvExport.Write(output, csv);
+            Console.WriteLine($"事件 {events.Count} 条（{files.Count} 个文件），导出 {result.Keys.Count} 个键");
+            Console.WriteLine($"→ {output}");
+            return 0;
+        }
 
-        string json = KeybrExport.Build(days);
-        KeybrExport.Write(output, json);
-
-        int sessions = days.Count(d => KeybrExport.KeysOf(d.Result).Count > 0);
-        int keys = days.SelectMany(d => KeybrExport.KeysOf(d.Result)).Select(k => k.CodePoint).Distinct().Count();
-
-        Console.WriteLine($"事件 {events.Count} 条（{files.Count} 个文件），{days.Count} 天");
-        Console.WriteLine($"导出 {sessions} 个 session，覆盖 {keys} 个字母/数字键");
-        Console.WriteLine();
+        StatsContext context = MakeStatsContext(directory, files, events.Count, since, today, options);
+        StatsBuilder.WriteJson(output, result, context);
+        Console.WriteLine($"事件 {events.Count} 条（{files.Count} 个文件），跳过 {result.Skipped.Total + rejected} 条");
         Console.WriteLine($"→ {output}");
-        Console.WriteLine();
-        Console.WriteLine("导入 keybr-tui：");
-        Console.WriteLine($"  keybr-tui --import \"{output}\"");
-        Console.WriteLine("（会先备份本地统计；加 --force 才覆盖）");
-
         return 0;
+    }
+
+    private static StatsContext MakeStatsContext(
+        string directory,
+        List<string> files,
+        int eventCount,
+        DateOnly? since,
+        DateOnly today,
+        AttributorOptions options) => new()
+    {
+        Directory = directory,
+        Files = files,
+        Events = eventCount,
+        From = since ?? EarliestFileDate(files) ?? today,
+        To = today,
+        PauseFactor = options.PauseFactor,
+        TypoMaxBackspaces = options.TypoMaxBackspaces,
+        MinKeySamples = options.MinKeySamples,
+    };
+
+    private static bool TryParseAttributionArgs(string[] args, out double pauseFactor, out int minSamples)
+    {
+        pauseFactor = 3.0;
+        minSamples = 20;
+
+        if (Value(args, "--pause-factor") is string factorText
+            && (!double.TryParse(factorText, NumberStyles.Float, CultureInfo.InvariantCulture, out pauseFactor) || pauseFactor <= 0))
+        {
+            Console.Error.WriteLine("--pause-factor 需要一个正小数，例如 3。");
+            return false;
+        }
+
+        if (Value(args, "--min-samples") is string sampleText
+            && (!int.TryParse(sampleText, NumberStyles.Integer, CultureInfo.InvariantCulture, out minSamples) || minSamples < 1))
+        {
+            Console.Error.WriteLine("--min-samples 需要正整数，例如 20。");
+            return false;
+        }
+
+        return true;
     }
 
     /// <summary>生成练习页：一屏一个字，打小鹤双拼的两键。</summary>
