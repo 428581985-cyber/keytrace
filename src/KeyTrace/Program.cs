@@ -102,7 +102,7 @@ internal static class Program
               stats      把 events.jsonl 归因成 stats.json 与 typos.jsonl
               label      导出金标标注表，人工打勾后用来校准判定规则
               export     把统计翻译成别人的格式（支持 keybr / csv / json）
-              words      按弱键生成中文练习串
+              words      按弱键生成中文或符号练习串
               dashboard  生成单文件 HTML 看板，双击就开
               drill      生成单文件练习页，一屏一个字，练完给成绩
               pause      暂停录制（等同托盘菜单 / Ctrl+Alt+P）
@@ -135,9 +135,10 @@ internal static class Program
               --in / --since / --pause-factor / --min-samples  同 stats
 
             words 专用：
-              --weak <字母>      弱键，逗号分隔，如 c,v,f；不给就从 stats.json 取前五
-              --count <n>        生成多少个字，默认 40
-              --out <文件>       默认 %USERPROFILE%\.keytrace\weak-zh.txt
+              --lang <语言>      zh（中文双拼，默认）或 sym（编程符号）
+              --weak <键或符号>  弱键（如 c,v,f 或 {};[]=）；不给就从 stats.json 取
+              --count <n>        生成多少个字/串，默认 40
+              --out <文件>       默认 weak-zh.txt / weak-sym.txt
 
             dashboard 专用：
               --stats <文件>     读哪个统计，默认 %USERPROFILE%\.keytrace\stats.json
@@ -673,15 +674,15 @@ internal static class Program
         return 0;
     }
 
-    /// <summary>按弱键生成中文练习串：中文只能靠"字的双拼码里有哪个键"来筛，不能像英文那样按字母筛词。</summary>
+    /// <summary>按弱键生成练习串：中文按双拼码反查字，符号用真实代码片段。</summary>
     private static int BuildWords(string[] args)
     {
         ConsoleBridge.Attach();
 
-        string lang = Value(args, "--lang") ?? "zh";
-        if (lang != "zh")
+        string lang = (Value(args, "--lang") ?? "zh").ToLowerInvariant();
+        if (lang is not ("zh" or "sym"))
         {
-            Console.Error.WriteLine("目前只支持中文（--lang zh）。英文交给 keybr 导出，符号还没做。");
+            Console.Error.WriteLine($"不支持的语言：{lang}。目前支持 zh（中文双拼）/ sym（编程符号）；英文请用 keytrace export --format keybr。");
             return 1;
         }
 
@@ -690,6 +691,11 @@ internal static class Program
         {
             Console.Error.WriteLine("--count 需要正整数。");
             return 1;
+        }
+
+        if (lang == "sym")
+        {
+            return BuildSymbolWords(args, count);
         }
 
         List<char> weak;
@@ -755,6 +761,77 @@ internal static class Program
             Console.WriteLine($"  {e.Char}：{e.Syllable} = {e.Code[0]} + {e.Code[1]}");
         }
 
+        return 0;
+    }
+
+    private static int BuildSymbolWords(string[] args, int count)
+    {
+        HashSet<char> weakSet;
+        string source;
+        if (Value(args, "--weak") is string spec)
+        {
+            weakSet = SymbolSelector.ParseWeakSpec(spec);
+            source = "命令行指定";
+        }
+        else
+        {
+            string statsPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                ".keytrace",
+                "stats.json");
+            if (File.Exists(statsPath))
+            {
+                weakSet = [.. SymbolSelector.WeakSymbolsFromStatsJson(File.ReadAllText(statsPath))];
+                source = "来自 stats.json（无符号错时回落默认常用符号）";
+            }
+            else
+            {
+                weakSet = [.. SymbolSelector.DefaultWeakSymbols];
+                source = "默认常用代码符号";
+            }
+        }
+
+        if (weakSet.Count == 0)
+        {
+            Console.Error.WriteLine("没有弱符号可用，请用 --weak \"{}\" 手动指定。");
+            return 1;
+        }
+
+        List<string> picked = SymbolSelector.Pick(weakSet, count);
+        if (picked.Count == 0)
+        {
+            Console.Error.WriteLine($"内置符号词库里没有包含 {string.Join(' ', weakSet)} 的代码串。");
+            return 1;
+        }
+
+        string output = Value(args, "--out") ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".keytrace",
+            "weak-sym.txt");
+
+        List<string> lines = [];
+        for (int i = 0; i < picked.Count; i += 8)
+        {
+            lines.Add(string.Join(' ', picked.Skip(i).Take(8)));
+        }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(output))!);
+        File.WriteAllLines(output, lines, new System.Text.UTF8Encoding(false));
+
+        Dictionary<char, int> coverage = SymbolSelector.Coverage(picked);
+        Console.WriteLine($"弱符号 {string.Join(' ', weakSet)}（{source}）→ {picked.Count} 串");
+        Console.WriteLine();
+        foreach (string line in lines)
+        {
+            Console.WriteLine(line);
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("覆盖：" + string.Join("  ",
+            weakSet.Select(w => $"{w}×{coverage.GetValueOrDefault(w)}")));
+        Console.WriteLine($"混入 {picked.Count - picked.Count(p => p.Any(weakSet.Contains))} 个已掌握符号串（约 {SymbolSelector.KnownMix:P0}），避免偏科");
+        Console.WriteLine();
+        Console.WriteLine($"→ {output}");
         return 0;
     }
 

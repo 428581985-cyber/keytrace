@@ -75,6 +75,23 @@ keytrace words --weak c,v,f --count 60
 
 ---
 
+## 符号：代码短串（`keytrace words --lang sym`）
+
+```bash
+keytrace words --lang sym                    # 从 stats.json 提取弱符号，默认输出 weak-sym.txt
+keytrace words --lang sym --weak "{};[]=" --count 40
+```
+
+从内置的一组无空格代码风格短串（如 `{}`、`a[i]`、`fn(x)`、`x=1;`、`a->b`、`x=>y`、`std::io`、`a&&b` 等）里挑选：
+
+1. 优先覆盖尚未命中的弱符号，其次按命中弱符号数排序，避免同一串重复刷屏
+2. 同样均匀混入约 **20%** 不含弱符号的常用串，防止练成只盯个别键的偏科
+3. 若 `--weak` 含逗号本身，可单独传 `,` 或写 `,,`（如 `,.;`）；夹在分段间的 `,` 会当成分隔符（如 `{},[]`）
+
+输出 `%USERPROFILE%\.keytrace\weak-sym.txt`，每行 8 个短串，空格分隔，可直接粘进 monkeytype / keybr 自定义文本练习。
+
+---
+
 ## 练习页（`keytrace drill`）
 
 ```bash

@@ -28,6 +28,7 @@ internal static class Program
         CsvExportTests();
         ShuangpinTests();
         ZhSelectionTests();
+        SymbolSelectionTests();
         AccuracyGuardTests();
         DashboardTests();
         DrillPageTests();
@@ -449,6 +450,44 @@ internal static class Program
 
         True("空弱键不出字", ZhSelector.Pick(new HashSet<char>(), 10).Count == 0);
         True("数量为 0 不出字", ZhSelector.Pick(weak, 0).Count == 0);
+    }
+
+    private static void SymbolSelectionTests()
+    {
+        Section("符号选词");
+
+        HashSet<char> weak = ['{', '}', '[', ']'];
+        System.Collections.Generic.List<string> picked = SymbolSelector.Pick(weak, 40);
+        Eq("生成指定数量", "40", picked.Count.ToString());
+        True("弱符号全部被覆盖", weak.All(w => picked.Any(p => p.Contains(w))));
+        True("大部分串含弱符号", picked.Count(p => p.Any(weak.Contains)) >= 30);
+        Eq("不含弱符号的约两成", "8", picked.Count(p => !p.Any(weak.Contains)).ToString());
+        True("所有串不含内部空格", picked.All(p => !p.Any(char.IsWhiteSpace)));
+
+        True("空弱符号不出串", SymbolSelector.Pick(new HashSet<char>(), 10).Count == 0);
+        True("数量为 0 不出串", SymbolSelector.Pick(weak, 0).Count == 0);
+
+        True("直接连写解析弱符号", SymbolSelector.ParseWeakSpec("{};[]").SetEquals(['{', '}', ';', '[', ']']));
+        True("单独逗号保留", SymbolSelector.ParseWeakSpec(",").SetEquals([',']));
+        True("逗号分隔时正确拆出符号", SymbolSelector.ParseWeakSpec("{},[]").SetEquals(['{', '}', '[', ']']));
+
+        string statsJson = """
+            {
+              "symbols": [
+                {"char":"{","vk":219,"shift":true,"count":30,"typos":4},
+                {"char":";","vk":186,"shift":false,"count":50,"typos":2},
+                {"char":"1","vk":49,"shift":false,"count":20,"typos":0}
+              ],
+              "keys": [
+                {"vk":221,"name":"]","role":"symbol","weakScore":0.42}
+              ]
+            }
+            """;
+        System.Collections.Generic.List<char> fromStats = SymbolSelector.WeakSymbolsFromStatsJson(statsJson, limit: 6);
+        Eq("stats 里错误最多的符号排第一", "{", fromStats[0].ToString());
+        True("包含 symbols 有错的分号", fromStats.Contains(';'));
+        True("包含 keys 弱符号键展开的 ] 和 }", fromStats.Contains(']') && fromStats.Contains('}'));
+        True("空 stats 回落默认常用符号", SymbolSelector.WeakSymbolsFromStatsJson("{}", limit: 4).Count == 4);
     }
 
     private static void DashboardTests()
