@@ -177,6 +177,8 @@ internal static class Program
             captureText: !HasFlag(args, "--no-text"),
             traceText: HasFlag(args, "--debug-text"));
         TrayApplication tray = new(target);
+        using System.Windows.Forms.Timer statusTimer = new() { Interval = 5000 };
+        statusTimer.Tick += (_, _) => tray.SetEventCount(collector.EventCount);
 
         bool exiting = false;
 
@@ -188,6 +190,7 @@ internal static class Program
             }
 
             exiting = true;
+            statusTimer.Stop();
             tray.Shutdown();
             Application.ExitThread();
         }
@@ -218,6 +221,7 @@ internal static class Program
             tray.Notify($"热键 {GlobalHotkey.Description} 被其他程序占用，请用托盘菜单暂停。");
         }
 
+        statusTimer.Start();
         Application.Run(tray);
 
         writer.Flush();

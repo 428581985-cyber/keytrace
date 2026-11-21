@@ -17,7 +17,10 @@ internal sealed class TrayApplication : ApplicationContext
     private readonly Icon _recordingIcon;
     private readonly Icon _pausedIcon;
     private readonly ToolStripMenuItem _toggleItem;
+    private readonly ToolStripMenuItem _countItem;
     private readonly string _dataDirectory;
+    private bool _paused;
+    private long _eventCount;
 
     public TrayApplication(string dataDirectory)
     {
@@ -27,9 +30,14 @@ internal sealed class TrayApplication : ApplicationContext
         _pausedIcon = CreateDotIcon(Color.FromArgb(140, 140, 140));
 
         _toggleItem = new ToolStripMenuItem("暂停录制", null, (_, _) => ToggleRequested?.Invoke());
+        _countItem = new ToolStripMenuItem("本次录制：0 事件") { Enabled = false };
 
         ContextMenuStrip menu = new();
         menu.Items.Add(new ToolStripMenuItem(AppName) { Enabled = false });
+        menu.Items.Add(_countItem);
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(new ToolStripMenuItem("打开键盘监控面板", null, (_, _) => OpenUrl("http://localhost:3000/keytrace")));
+        menu.Items.Add(new ToolStripMenuItem("打开双拼练习", null, (_, _) => OpenUrl("http://localhost:3000/")));
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_toggleItem);
         menu.Items.Add(new ToolStripMenuItem("打开数据目录", null, (_, _) => OpenDataFolder()));
@@ -54,9 +62,46 @@ internal sealed class TrayApplication : ApplicationContext
 
     public void SetPaused(bool paused)
     {
+        _paused = paused;
         _tray.Icon = paused ? _pausedIcon : _recordingIcon;
-        _tray.Text = paused ? $"{AppName} · 已暂停" : $"{AppName} · 录制中";
         _toggleItem.Text = paused ? "继续录制" : "暂停录制";
+        UpdateStatusText();
+    }
+
+    public void SetEventCount(long count)
+    {
+        if (count == _eventCount)
+        {
+            return;
+        }
+        _eventCount = count;
+        _countItem.Text = $"本次录制：{count:N0} 事件";
+        UpdateStatusText();
+    }
+
+    private void UpdateStatusText()
+    {
+        string state = _paused ? "已暂停" : "录制中";
+        string text = _eventCount > 0
+            ? $"{AppName} · {state} ({_eventCount} 事件)"
+            : $"{AppName} · {state}";
+        _tray.Text = text.Length > 63 ? text[..63] : text;
+    }
+
+    private void OpenUrl(string url)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = url,
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            Notify($"打不开页面：{ex.Message}");
+        }
     }
 
     public void Notify(string message) => _tray.ShowBalloonTip(2000, AppName, message, ToolTipIcon.Info);
