@@ -37,12 +37,16 @@ internal sealed class RawInputCollector : IDisposable
 
     private readonly EventWriter _writer;
     private readonly SessionTracker _sessions = new();
+    private readonly object _sessionGate = new();
     private readonly ForegroundTracker _foreground = new();
     private readonly ExclusionList _exclusions;
     private readonly UiTextSampler _sampler;
-    private readonly bool _captureText;
+    private volatile bool _captureText;
+    private volatile string? _imeOverride;
+    private bool _samplerStarted;
     private readonly EventWaitHandle? _stopSignal;
     private readonly EventWaitHandle? _pauseSignal;
+    private readonly EventWaitHandle? _showSignal;
 
     /// <summary>单调时钟，只用来算间隔；墙钟由 ts 字段承担。</summary>
     private readonly Stopwatch _clock = Stopwatch.StartNew();
@@ -72,16 +76,20 @@ internal sealed class RawInputCollector : IDisposable
         EventWaitHandle? pauseSignal = null,
         ExclusionList? exclusions = null,
         bool captureText = true,
-        bool traceText = false)
+        bool traceText = false,
+        EventWaitHandle? showSignal = null,
+        string? imeOverride = null)
     {
         _writer = writer;
         _stopSignal = stopSignal;
         _pauseSignal = pauseSignal;
+        _showSignal = showSignal;
         _exclusions = exclusions ?? new ExclusionList();
         _captureText = captureText;
+        _imeOverride = NormalizeImeOverride(imeOverride);
         _wndProc = OnWndProc;
         _sampler = new UiTextSampler(
-            OnCommitText, () => IsPaused, _exclusions, traceText,
+            OnCommitText, () => IsPaused || !_captureText, _exclusions, traceText,
             traceText ? Path.Combine(writer.OutputDirectory, "uia-debug.log") : null);
     }
 
@@ -91,9 +99,21 @@ internal sealed class RawInputCollector : IDisposable
     /// <summary>收到停止请求时触发。</summary>
     public event Action? Stopped;
 
+    /// <summary>每次落盘事件后触发，供实时 UI 遥测订阅。</summary>
+    public event Action<KeyEvent>? EventRecorded;
+
+    /// <summary>外部实例通过命名事件请求呼出主窗口时触发。</summary>
+    public event Action? ShowRequested;
+
     public long EventCount { get; private set; }
 
     public string DataDirectory => _writer.OutputDirectory;
+
+    public ExclusionList Exclusions => _exclusions;
+
+    public bool CaptureText => _captureText;
+
+    public string EffectiveIme => _imeOverride ?? ImeConfig.Describe();
 
     /// <summary>热键被别的程序占用时为 false，此时只能靠托盘菜单暂停。</summary>
     public bool HotkeyRegistered => _hotkeyRegistered;
@@ -112,9 +132,35 @@ internal sealed class RawInputCollector : IDisposable
 
         WriteSessionMeta();
 
-        if (_captureText)
+        if (_captureText && !_samplerStarted)
         {
+            _samplerStarted = true;
             _sampler.Start();
+        }
+    }
+
+    public void SetCaptureText(bool enabled)
+    {
+        _captureText = enabled;
+        if (enabled && _running && !_samplerStarted)
+        {
+            _samplerStarted = true;
+            _sampler.Start();
+        }
+    }
+
+    public void SetImeOverride(string? imeOverride)
+    {
+        string? normalized = NormalizeImeOverride(imeOverride);
+        if (string.Equals(_imeOverride, normalized, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _imeOverride = normalized;
+        if (_running)
+        {
+            WriteSessionMeta();
         }
     }
 
@@ -240,6 +286,12 @@ internal sealed class RawInputCollector : IDisposable
                     WriteSessionMeta();
                 }
 
+                if (_showSignal?.WaitOne(0) == true)
+                {
+                    _showSignal.Reset();
+                    ShowRequested?.Invoke();
+                }
+
                 if (_stopSignal?.WaitOne(0) == true)
                 {
                     RequestStop();
@@ -310,20 +362,23 @@ internal sealed class RawInputCollector : IDisposable
         DateTime now = DateTime.Now;
         DateOnly today = DateOnly.FromDateTime(now);
         long mono = _clock.ElapsedMilliseconds;
+        string? overridden = _imeOverride;
+        string sid = ObserveSession("keytrace", mono, today, countKey: false, resetKeysOnNewSession: false);
 
         KeyEvent ev = new()
         {
             Ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             Mono = mono,
             Ev = "meta",
-            Text = "ime=" + ImeConfig.Describe(),
-            Src = "registry",
+            Text = "ime=" + (overridden ?? ImeConfig.Describe()),
+            Src = overridden is not null ? "config" : "registry",
             Exe = "keytrace",
-            Sid = _sessions.Observe("keytrace", mono, today),
+            Sid = sid,
         };
 
         _writer.Write(ev.ToJsonLine(), today);
         _metaDay = today;
+        EventRecorded?.Invoke(ev);
     }
 
     /// <summary>
@@ -333,7 +388,7 @@ internal sealed class RawInputCollector : IDisposable
     /// </summary>
     private void OnCommitText(string text, string exe, int pid, string eventName)
     {
-        if (!_running || IsPaused)
+        if (!_running || IsPaused || !_captureText)
         {
             return;
         }
@@ -341,7 +396,23 @@ internal sealed class RawInputCollector : IDisposable
         long mono = _clock.ElapsedMilliseconds;
         DateTime now = DateTime.Now;
         DateOnly today = DateOnly.FromDateTime(now);
-        string sid = _sessions.Observe(exe, mono, today);
+        string sid;
+        int keys;
+        lock (_sessionGate)
+        {
+            sid = _sessions.Observe(exe, mono, today);
+            if (sid != _keysSid)
+            {
+                _keysSid = sid;
+                _keysSinceCommit = 0;
+            }
+
+            keys = _keysSinceCommit;
+            if (eventName == "commit")
+            {
+                _keysSinceCommit = 0;
+            }
+        }
 
         KeyEvent ev = new()
         {
@@ -350,7 +421,7 @@ internal sealed class RawInputCollector : IDisposable
             Ev = eventName,
             Text = text,
             Src = "uia",
-            Keys = _keysSinceCommit,
+            Keys = keys,
             Pid = pid,
             Exe = exe,
             Sid = sid,
@@ -358,13 +429,7 @@ internal sealed class RawInputCollector : IDisposable
 
         _writer.Write(ev.ToJsonLine(), today);
         EventCount++;
-
-        // 只有真正的上屏才结算击键数。comp 和 commit 是同一批按键的两个面，
-        // 在 comp 上清零会让紧随其后的 commit 的 keys 变成 0，被误判成粘贴。
-        if (eventName == "commit")
-        {
-            _keysSinceCommit = 0;
-        }
+        EventRecorded?.Invoke(ev);
     }
 
     private void Record(NativeMethods.RAWKEYBOARD kb)
@@ -394,15 +459,7 @@ internal sealed class RawInputCollector : IDisposable
             return;
         }
 
-        string sid = _sessions.Observe(exe, mono, today);
-
-        // 换会话（换应用 / 空闲超过 5 秒）就把击键计数清零。
-        // 否则在别的程序里打的字会被算到这次上屏头上，keys 就没有意义了。
-        if (sid != _keysSid)
-        {
-            _keysSid = sid;
-            _keysSinceCommit = 0;
-        }
+        string sid = ObserveSession(exe, mono, today, countKey: !isUp, resetKeysOnNewSession: true);
 
         KeyEvent ev = new()
         {
@@ -419,12 +476,37 @@ internal sealed class RawInputCollector : IDisposable
 
         _writer.Write(ev.ToJsonLine(), today);
         EventCount++;
+        EventRecorded?.Invoke(ev);
+    }
 
-        // 只数按下。kd 和 ku 都数的话，keys 正好翻倍。
-        if (!isUp)
+    private string ObserveSession(string exe, long mono, DateOnly today, bool countKey, bool resetKeysOnNewSession)
+    {
+        lock (_sessionGate)
         {
-            _keysSinceCommit++;
+            string sid = _sessions.Observe(exe, mono, today);
+            if (resetKeysOnNewSession && sid != _keysSid)
+            {
+                _keysSid = sid;
+                _keysSinceCommit = 0;
+            }
+
+            if (countKey)
+            {
+                _keysSinceCommit++;
+            }
+
+            return sid;
         }
+    }
+
+    private static string? NormalizeImeOverride(string? imeOverride)
+    {
+        if (string.IsNullOrWhiteSpace(imeOverride) || string.Equals(imeOverride, "auto", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return imeOverride.Trim();
     }
 
     /// <summary>从当前按键状态反推修饰键，对应事件格式里的 mods 位图。</summary>

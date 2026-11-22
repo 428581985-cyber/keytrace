@@ -3,6 +3,7 @@ using System.IO;
 using System.Linq;
 using KeyTrace.Analysis;
 using KeyTrace.Collect;
+using KeyTrace.Ui;
 
 namespace KeyTrace.Tests;
 
@@ -33,6 +34,10 @@ internal static class Program
         DashboardTests();
         DrillPageTests();
         DrillHistoryTests();
+        UserConfigTests();
+        ExclusionListTests();
+        LiveTelemetryTests();
+        DesktopStatsServiceTests();
 
         Console.WriteLine();
         Console.WriteLine($"通过 {_passed}，失败 {_failed}");
@@ -597,6 +602,201 @@ internal static class Program
             True("最近一场的 c 排在旧场的 q 前面（同等错误率按时间衰减）", rec.IndexOf('c') < rec.IndexOf('q'));
             False("已稳定的 z 从推荐里退出", rec.Contains('z'));
             True("不足 5 个时用未稳定的 stats 弱键补齐", rec.Contains('p') && rec.Contains('x'));
+        }
+        finally
+        {
+            if (Directory.Exists(dir))
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+        }
+    }
+
+    private static void UserConfigTests()
+    {
+        Section("UserConfig");
+        string dir = Path.Combine(Path.GetTempPath(), "keytrace-cfg-" + Guid.NewGuid().ToString("N")[..8]);
+        try
+        {
+            UserConfig def = UserConfig.Load(dir);
+            False("默认关闭悬浮条", def.ShowMiniHud);
+            True("默认开启 UIA 文本采集", def.CaptureText);
+            False("默认显示明文", def.HideLiveText);
+            Eq("默认网页练习地址", "http://localhost:3000/", def.WebPracticeUrl);
+            True("默认自定义排除为空", def.ExtraExclusions.Count == 0);
+
+            UserConfig custom = new()
+            {
+                ShowMiniHud = true,
+                MiniHudLeft = 320,
+                MiniHudTop = 180,
+                HideLiveText = true,
+                CaptureText = false,
+                ImeOverride = "  shuangpin/ziranma ",
+                ExtraExclusions = [" bank.exe ", "BANK.exe", "", "wechat.exe"],
+                WebPracticeUrl = "http://localhost:3000/keytrace",
+            };
+            custom.Save(dir);
+
+            UserConfig reloaded = UserConfig.Load(dir);
+            True("悬浮条状态往返", reloaded.ShowMiniHud);
+            True("坐标往返", Math.Abs((reloaded.MiniHudLeft ?? 0) - 320) < 0.1 && Math.Abs((reloaded.MiniHudTop ?? 0) - 180) < 0.1);
+            True("隐私模式往返", reloaded.HideLiveText);
+            False("纯键码开关往返", reloaded.CaptureText);
+            Eq("输入法方案往返并 trim", "shuangpin/ziranma", reloaded.ImeOverride ?? "");
+            Eq("排除列表去重与清理空白", "2", reloaded.ExtraExclusions.Count.ToString());
+            Eq("网页地址往返", "http://localhost:3000/keytrace", reloaded.WebPracticeUrl);
+
+            // 损坏的 JSON 应安全回落默认值
+            File.WriteAllText(UserConfig.FilePath(dir), "{ not valid json !!!");
+            UserConfig broken = UserConfig.Load(dir);
+            False("损坏 JSON 回落默认悬浮条设置", broken.ShowMiniHud);
+            True("损坏 JSON 回落默认开启文本采集", broken.CaptureText);
+        }
+        finally
+        {
+            if (Directory.Exists(dir))
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+        }
+    }
+
+    private static void ExclusionListTests()
+    {
+        Section("ExclusionList");
+        ExclusionList list = new(["customApp.exe"]);
+        True("内置密码管理器始终被排除", list.IsExcluded("1password.exe"));
+        True("自定义排除忽略大小写", list.IsExcluded("CUSTOMAPP.EXE"));
+
+        list.SetExtra(["bank.exe", "1password.exe", "vault.exe", "BANK.EXE"]);
+        True("新增自定义进程生效", list.IsExcluded("bank.exe"));
+        True("新增第二个进程生效", list.IsExcluded("Vault.EXE"));
+        False("被移除的旧进程不再排除", list.IsExcluded("customApp.exe"));
+        True("更换列表后内置仍受保护", list.IsExcluded("keepassxc.exe"));
+        Eq("ExtraNames 不重复计入内置项", "2", list.ExtraNames.Count.ToString());
+    }
+
+    private static void LiveTelemetryTests()
+    {
+        Section("LiveTelemetry");
+        LiveTelemetry t = new();
+        long baseTs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - 10_000;
+
+        t.SeedFromTodayCount(100);
+
+        // 修饰键和 Ctrl 快捷键不计入今日击键
+        t.Observe(new KeyEvent { Ts = baseTs, Ev = "kd", Vk = 16, Sc = 42, Mods = 1, Exe = "code.exe", Sid = "s1" });
+        t.Observe(new KeyEvent { Ts = baseTs + 50, Ev = "kd", Vk = 'C', Sc = 46, Mods = 2, Exe = "code.exe", Sid = "s1" });
+        Eq("修饰键和快捷键不递增计数", "100", t.Snapshot(baseTs + 100).TodayKeystrokes.ToString());
+
+        // 连续 5 下按 200ms 间隔 = 60 wpm；中间插一个 >3s 停顿再打 4 下依然算 ~60 wpm
+        long ts = baseTs;
+        for (int i = 0; i < 5; i++)
+        {
+            ts += 200;
+            t.Observe(new KeyEvent { Ts = ts, Ev = "kd", Vk = 'A' + i, Sc = 30, Mods = 0, Exe = "code.exe", Sid = "s1" });
+        }
+
+        // >3000ms 停顿（实际跳过 5000ms）
+        ts += 5000;
+        t.Observe(new KeyEvent { Ts = ts, Ev = "kd", Vk = 'O', Sc = 24, Mods = 0, Exe = "code.exe", Sid = "s1" });
+        // 退格改按 W（在 3s 内触发实时纠错捕获）
+        t.Observe(new KeyEvent { Ts = ts + 180, Ev = "kd", Vk = 8, Sc = 14, Mods = 0, Exe = "code.exe", Sid = "s1" });
+        t.Observe(new KeyEvent { Ts = ts + 360, Ev = "kd", Vk = 'W', Sc = 17, Mods = 0, Exe = "code.exe", Sid = "s1" });
+
+        LiveTelemetrySnapshot snapActive = t.Snapshot(ts + 500);
+        True($"实时 WPM 合理 ({snapActive.LiveWpm})", snapActive.LiveWpm is >= 45 and <= 80);
+        Eq("实时捕获到纠错文案", "误 O → W", snapActive.LastCorrectionText ?? "");
+        Eq("紧凑纠错徽标格式正确", "误 O→W", snapActive.LastCorrectionCompact ?? "");
+
+        // 超过 8 秒纠错提醒应消失，超过 15 秒空闲 WPM 归零
+        LiveTelemetrySnapshot snapIdle = t.Snapshot(ts + 20_000);
+        True("超过 8 秒后纠错提醒自动消除", snapIdle.LastCorrectionText is null);
+        Eq("超过 15 秒空闲速度归零", "0", snapIdle.LiveWpm.ToString());
+
+        // 批量粘贴 / URL 过滤，正常上屏进入心跳，且总条数受限于 80
+        t.Observe(new KeyEvent { Ts = ts + 400, Ev = "commit", Text = "粘贴词", Keys = 0, Exe = "code.exe", Sid = "s1" });
+        t.Observe(new KeyEvent { Ts = ts + 450, Ev = "commit", Text = "https://example.com", Keys = 3, Exe = "code.exe", Sid = "s1" });
+        t.Observe(new KeyEvent { Ts = ts + 500, Ev = "commit", Text = "你好世界", Keys = 4, Exe = "code.exe", Sid = "s1" });
+
+        LiveTelemetrySnapshot afterCommit = t.Snapshot(ts + 600);
+        True("过滤零击键和 URL 后只保留真实上屏与纠错", afterCommit.Feed.Count == 2);
+        Eq("最新心跳为真实上屏文字", "你好世界", afterCommit.Feed[0].Text ?? "");
+
+        for (int i = 0; i < 100; i++)
+        {
+            t.Observe(new KeyEvent { Ts = ts + 700 + i, Ev = "commit", Text = $"字{i}", Keys = 2, Exe = "code.exe", Sid = "s1" });
+        }
+
+        Eq("心跳流严格截断在 80 条以内", "80", t.Snapshot(ts + 900).Feed.Count.ToString());
+    }
+
+    private static void DesktopStatsServiceTests()
+    {
+        Section("DesktopStatsService");
+        string dir = Path.Combine(Path.GetTempPath(), "keytrace-dstats-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(dir);
+        try
+        {
+            DateOnly today = DateOnly.FromDateTime(DateTime.Now);
+            long t0 = new DateTimeOffset(today.ToDateTime(new TimeOnly(10, 0))).ToUnixTimeMilliseconds();
+            long mono = 1000;
+            System.Collections.Generic.List<string> lines = [];
+
+            string JsonLine(long ts, long m, string ev, int vk, int sc, string exe, string sid, string? text = null, int? keys = null)
+            {
+                return new KeyEvent
+                {
+                    Ts = ts,
+                    Mono = m,
+                    Ev = ev,
+                    Vk = vk,
+                    Sc = sc,
+                    Mods = 0,
+                    Exe = exe,
+                    Sid = sid,
+                    Text = text,
+                    Src = text is null ? null : (ev == "meta" ? "config" : "uia"),
+                    Keys = keys,
+                }.ToJsonLine();
+            }
+
+            lines.Add(JsonLine(t0, mono, "meta", 0, 0, "keytrace", "s0", "ime=shuangpin/xiaohe"));
+            // 25 次基线与常见按键 + Q 键纠错
+            for (int i = 0; i < 24; i++)
+            {
+                t0 += 180;
+                mono += 180;
+                int vk = 'A' + (i % 6);
+                lines.Add(JsonLine(t0, mono, "kd", vk, 30, "msedge.exe", "s1"));
+            }
+
+            // 模拟对 Q 键的多次误按并改按 W
+            for (int i = 0; i < 3; i++)
+            {
+                t0 += 200; mono += 200;
+                lines.Add(JsonLine(t0, mono, "kd", 'Q', 16, "msedge.exe", "s1"));
+                t0 += 150; mono += 150;
+                lines.Add(JsonLine(t0, mono, "kd", 8, 14, "msedge.exe", "s1"));
+                t0 += 160; mono += 160;
+                lines.Add(JsonLine(t0, mono, "kd", 'W', 17, "msedge.exe", "s1"));
+            }
+
+            t0 += 100; mono += 100;
+            lines.Add(JsonLine(t0, mono, "commit", 0, 0, "msedge.exe", "s1", "测试上屏文本", 8));
+
+            string todayFile = Path.Combine(dir, $"{today:yyyy-MM-dd}.jsonl");
+            File.WriteAllLines(todayFile, lines);
+
+            DesktopSnapshot snap = DesktopStatsService.LoadCore(dir, StatsRange.Today, null);
+            True("统计识别出今日输入法方案", snap.ImeName == "shuangpin/xiaohe");
+            True($"统计有总击键 ({snap.Keystrokes})", snap.Keystrokes >= 27);
+            True($"识别出弱键 Q ({snap.WeakLetters.Count})", snap.WeakLetters.Any(k => k.Name == "Q"));
+            True("记录最近上屏片段", snap.RecentCommits.Any(c => c.Text == "测试上屏文本"));
+            True("分布到应用 msedge.exe", snap.Apps.Any(a => a.Exe == "msedge.exe"));
+            True("24 小时数组长度正确", snap.HourlySeries.Count == 24 && snap.HourlySeries[10].Keystrokes > 0);
+            True("最近纠错还原含 Q -> W", snap.RecentTypos.Any(r => r.Deleted == 'q' && r.Replacement == 'w'));
         }
         finally
         {

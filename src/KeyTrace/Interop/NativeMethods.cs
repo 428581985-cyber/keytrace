@@ -30,8 +30,12 @@ internal static class NativeMethods
     /// <summary>Flags 里这一位置 1 表示"松开"，0 表示"按下"。</summary>
     internal const ushort RI_KEY_BREAK = 0x01;
 
-    // ---------- 窗口样式 ----------
+    // ---------- 窗口样式与 DWM ----------
     internal const uint WS_POPUP = 0x80000000;
+    internal const int GWL_EXSTYLE = -20;
+    internal const int WS_EX_NOACTIVATE = 0x08000000;
+    internal const int WS_EX_TOOLWINDOW = 0x00000080;
+    internal const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
 
     // ---------- 进程访问权限 ----------
     /// <summary>只读进程信息的最小权限，不需要 PROCESS_QUERY_INFORMATION 那么高。</summary>
@@ -192,4 +196,26 @@ internal static class NativeMethods
 
     [DllImport("kernel32.dll", SetLastError = true)]
     internal static extern bool CloseHandle(IntPtr hObject);
+
+    // ---------- 窗口外观与扩展样式 ----------
+    [DllImport("dwmapi.dll")]
+    internal static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)]
+    private static extern IntPtr GetWindowLongPtr64(IntPtr hWnd, int nIndex);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
+    private static extern IntPtr SetWindowLongPtr64(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongW", SetLastError = true)]
+    private static extern IntPtr GetWindowLong32(IntPtr hWnd, int nIndex);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongW", SetLastError = true)]
+    private static extern IntPtr SetWindowLong32(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+    internal static IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex) =>
+        IntPtr.Size == 8 ? GetWindowLongPtr64(hWnd, nIndex) : GetWindowLong32(hWnd, nIndex);
+
+    internal static IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong) =>
+        IntPtr.Size == 8 ? SetWindowLongPtr64(hWnd, nIndex, dwNewLong) : SetWindowLong32(hWnd, nIndex, dwNewLong);
 }

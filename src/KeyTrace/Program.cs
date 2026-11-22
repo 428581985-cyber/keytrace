@@ -2,7 +2,6 @@ using System;
 using System.Globalization;
 using System.IO;
 using System.Threading;
-using System.Windows.Forms;
 using KeyTrace.Analysis;
 using KeyTrace.Collect;
 using KeyTrace.Control;
@@ -21,6 +20,11 @@ internal static class Program
 
         if (args.Length == 0)
         {
+            if (!ConsoleBridge.Attached)
+            {
+                return RunUi([]);
+            }
+
             PrintHelp();
             return 1;
         }
@@ -38,6 +42,9 @@ internal static class Program
 
             case "run":
                 return RunDaemon(args[1..]);
+
+            case "ui":
+                return RunUi(args[1..]);
 
             case "collect":
                 return CollectForeground(args[1..]);
@@ -97,7 +104,8 @@ internal static class Program
               keytrace <命令> [选项]
 
             命令：
-              run        常驻录制，带托盘图标（推荐日常使用）
+              run        常驻录制，带托盘图标（可选 --show 立即打开主窗口）
+              ui         打开独立桌面监控窗口（已有常驻端时优先唤醒，否则以只读视图打开）
               collect    前台录制，调试用，Ctrl+C 结束
               stats      把 events.jsonl 归因成 stats.json 与 typos.jsonl
               label      导出金标标注表，人工打勾后用来校准判定规则
@@ -113,6 +121,9 @@ internal static class Program
               --out <目录>   数据目录，默认 %USERPROFILE%\.keytrace\events
               -h, --help     显示本帮助
               --version      显示版本
+
+            ui 专用：
+              --viewer       强制以独立只读视图启动窗口（不抢占常驻托盘锁）
 
             stats 专用：
               --in <目录>        事件目录，默认同上
@@ -155,10 +166,12 @@ internal static class Program
             """);
     }
 
-    /// <summary>常驻模式：单实例 + 托盘 + 热键 + 采集，靠 Application.Run 泵消息。</summary>
+    /// <summary>常驻模式：单实例 + 托盘 + 热键 + 采集 + 桌面窗口，靠 WPF Application 消息循环驱动。</summary>
     private static int RunDaemon(string[] args)
     {
         string target = ResolveDataDirectory(args);
+        string baseDir = UserConfig.BaseDirectoryFromEvents(target);
+        UserConfig config = UserConfig.Load(baseDir);
 
         using Mutex? instance = ControlSignals.TryAcquireInstance();
         if (instance is null)
@@ -167,65 +180,57 @@ internal static class Program
             return 1;
         }
 
-        (EventWaitHandle stopSignal, EventWaitHandle pauseSignal) = ControlSignals.CreateServerSide();
+        (EventWaitHandle stopSignal, EventWaitHandle pauseSignal, EventWaitHandle showSignal) = ControlSignals.CreateServerSide();
         using EventWaitHandle stop = stopSignal;
         using EventWaitHandle pause = pauseSignal;
+        using EventWaitHandle show = showSignal;
 
+        bool captureText = HasFlag(args, "--no-text") ? false : config.CaptureText;
+        ExclusionList exclusions = new(config.ExtraExclusions);
         using EventWriter writer = new(target);
         using RawInputCollector collector = new(
-            writer, stop, pause,
-            captureText: !HasFlag(args, "--no-text"),
-            traceText: HasFlag(args, "--debug-text"));
-        TrayApplication tray = new(target);
-        using System.Windows.Forms.Timer statusTimer = new() { Interval = 5000 };
-        statusTimer.Tick += (_, _) => tray.SetEventCount(collector.EventCount);
+            writer,
+            stop,
+            pause,
+            exclusions: exclusions,
+            captureText: captureText,
+            traceText: HasFlag(args, "--debug-text"),
+            showSignal: show,
+            imeOverride: config.ImeOverride);
 
-        bool exiting = false;
+        return DesktopAppHost.RunDaemon(
+            collector,
+            writer,
+            config,
+            baseDir,
+            showOnStart: HasFlag(args, "--show"));
+    }
 
-        void Shutdown()
+    /// <summary>打开独立桌面窗口：优先唤醒已有常驻端；已有不可唤醒的后台端时回落为实时只读视图。</summary>
+    private static int RunUi(string[] args)
+    {
+        string target = Value(args, "--in") ?? ResolveDataDirectory(args);
+        string baseDir = UserConfig.BaseDirectoryFromEvents(target);
+        UserConfig config = UserConfig.Load(baseDir);
+
+        bool forceViewer = HasFlag(args, "--viewer");
+        if (!forceViewer && ControlSignals.SignalShow())
         {
-            if (exiting)
+            return 0;
+        }
+
+        if (!forceViewer)
+        {
+            using Mutex? probe = ControlSignals.TryAcquireInstance();
+            if (probe is not null)
             {
-                return;
+                probe.ReleaseMutex();
+                probe.Dispose();
+                return RunDaemon(["--out", target, "--show"]);
             }
-
-            exiting = true;
-            statusTimer.Stop();
-            tray.Shutdown();
-            Application.ExitThread();
         }
 
-        tray.ToggleRequested += collector.TogglePause;
-        tray.ExitRequested += () =>
-        {
-            collector.RequestStop();
-            Shutdown();
-        };
-
-        collector.PauseChanged += tray.SetPaused;
-        collector.Stopped += Shutdown;
-
-        try
-        {
-            collector.Start();
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine(ex.Message);
-            tray.Shutdown();
-            return 1;
-        }
-
-        if (!collector.HotkeyRegistered)
-        {
-            tray.Notify($"热键 {GlobalHotkey.Description} 被其他程序占用，请用托盘菜单暂停。");
-        }
-
-        statusTimer.Start();
-        Application.Run(tray);
-
-        writer.Flush();
-        return 0;
+        return DesktopAppHost.RunViewer(target, baseDir, config);
     }
 
     /// <summary>调试模式：前台跑，Ctrl+C 或 stop 都能结束。</summary>
@@ -613,7 +618,7 @@ internal static class Program
             return 1;
         }
 
-        string items = BuildDrillItems(picked);
+        string items = BuildDrillItemsJson(picked);
         string title = $"{picked.Count} 个字 · 小鹤双拼练习";
 
         string output = Value(args, "--out") ?? Path.Combine(
@@ -700,7 +705,7 @@ internal static class Program
         return recommended;
     }
 
-    private static string BuildDrillItems(List<HanziEntry> picked)
+    internal static string BuildDrillItemsJson(List<HanziEntry> picked)
     {
         using MemoryStream stream = new();
         using (System.Text.Json.Utf8JsonWriter w = new(stream, new System.Text.Json.JsonWriterOptions

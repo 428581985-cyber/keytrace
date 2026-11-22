@@ -24,28 +24,66 @@ internal sealed class ExclusionList
         "authenticator.exe",
     ];
 
-    private readonly HashSet<string> _names = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _gate = new();
+    private List<string> _extra = [];
+    private volatile HashSet<string> _names = new(BuiltIn, StringComparer.OrdinalIgnoreCase);
 
     public ExclusionList(IEnumerable<string>? extra = null)
     {
-        foreach (string name in BuiltIn)
-        {
-            _names.Add(name);
-        }
+        SetExtra(extra);
+    }
 
-        if (extra is null)
-        {
-            return;
-        }
+    public static IReadOnlyList<string> BuiltInNames => BuiltIn;
 
-        foreach (string name in extra)
+    public IReadOnlyList<string> ExtraNames
+    {
+        get
         {
-            if (!string.IsNullOrWhiteSpace(name))
+            lock (_gate)
             {
-                _names.Add(name.Trim());
+                return [.. _extra];
             }
         }
     }
 
-    public bool IsExcluded(string? exe) => exe is not null && _names.Contains(exe);
+    public void SetExtra(IEnumerable<string>? extra)
+    {
+        lock (_gate)
+        {
+            HashSet<string> next = new(BuiltIn, StringComparer.OrdinalIgnoreCase);
+            List<string> normalizedExtra = [];
+
+            if (extra is not null)
+            {
+                HashSet<string> seenExtra = new(StringComparer.OrdinalIgnoreCase);
+                foreach (string raw in extra)
+                {
+                    if (string.IsNullOrWhiteSpace(raw))
+                    {
+                        continue;
+                    }
+
+                    string trimmed = raw.Trim();
+                    if (next.Add(trimmed) && seenExtra.Add(trimmed))
+                    {
+                        normalizedExtra.Add(trimmed);
+                    }
+                }
+            }
+
+            _extra = normalizedExtra;
+            _names = next;
+        }
+    }
+
+    public bool IsExcluded(string? exe)
+    {
+        if (exe is null)
+        {
+            return false;
+        }
+
+        HashSet<string> snapshot = _names;
+        return snapshot.Contains(exe);
+    }
 }
