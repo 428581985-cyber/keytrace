@@ -198,6 +198,9 @@ internal static class NativeMethods
     internal static extern bool CloseHandle(IntPtr hObject);
 
     // ---------- 窗口外观与扩展样式 ----------
+    [DllImport("user32.dll")]
+    internal static extern bool SetForegroundWindow(IntPtr hWnd);
+
     [DllImport("dwmapi.dll")]
     internal static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
 

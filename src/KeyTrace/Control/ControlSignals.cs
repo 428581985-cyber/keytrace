@@ -1,15 +1,13 @@
 using System;
+using System.IO;
 using System.Threading;
 
 namespace KeyTrace.Control;
 
 /// <summary>
-/// 跨进程控制通道。刻意不用命名管道：这里要传的只有四个开关，
-/// 而 Windows 的命名事件本身就是"有信号 / 无信号"的布尔状态，
-/// 天然对应"暂停 / 继续 / 呼出窗口"，比定义一套命令协议简单得多。
-///
-/// 命名用 <c>Local\</c> 而不是 <c>Global\</c>：只在当前登录会话内可见，
-/// 不需要额外权限，也不会被同机器其他用户干扰。
+/// 跨进程控制通道。刻意不用命名管道：日常只传停/启/显三个布尔信号。
+/// 高权限计划任务与普通权限用户进程之间，内核命名事件会受默认 DACL 限制；
+/// 因此唤醒主窗口同时提供基于用户可写目录的轻量触发文件（.show-window）作为跨 UAC 兜底。
 /// </summary>
 internal static class ControlSignals
 {
@@ -54,6 +52,70 @@ internal static class ControlSignals
         }
     }
 
+    public static string ShowTriggerPath(string baseDirectory) => Path.Combine(baseDirectory, ".show-window");
+
+    /// <summary>
+    /// 尝试唤醒已有常驻端的主窗口：优先内核事件；若跨 UAC 受阻则写 .show-window 并等待后台消费。
+    /// 返回 false 说明后台无响应（多半是尚未升级的无窗口旧版本）。
+    /// </summary>
+    public static bool RequestShowViaFile(string baseDirectory, int waitMs = 700)
+    {
+        if (SignalShow())
+        {
+            return true;
+        }
+
+        string path = ShowTriggerPath(baseDirectory);
+        try
+        {
+            Directory.CreateDirectory(baseDirectory);
+            File.WriteAllText(path, Environment.ProcessId.ToString());
+
+            int elapsed = 0;
+            while (elapsed < waitMs)
+            {
+                Thread.Sleep(50);
+                elapsed += 50;
+                if (!File.Exists(path))
+                {
+                    return true;
+                }
+            }
+
+            TryDeleteFile(path);
+            return false;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            TryDeleteFile(path);
+            return false;
+        }
+    }
+
+    /// <summary>常驻端轮询检查跨权限唤醒文件；消费并删掉文件后返回 true。</summary>
+    public static bool ConsumeShowTrigger(string baseDirectory)
+    {
+        string path = ShowTriggerPath(baseDirectory);
+        if (!File.Exists(path))
+        {
+            return false;
+        }
+
+        try
+        {
+            File.Delete(path);
+            return true;
+        }
+        catch (FileNotFoundException)
+        {
+            return false;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
     public static bool SignalStop() => Set(StopName);
 
     public static bool SignalPause() => Set(PauseName);
@@ -85,6 +147,21 @@ internal static class ControlSignals
         catch (Exception ex) when (ex is WaitHandleCannotBeOpenedException or UnauthorizedAccessException)
         {
             return false;
+        }
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // 忽略并发清理冲突
         }
     }
 }

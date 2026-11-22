@@ -4,68 +4,51 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
-using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 using KeyTrace.Analysis;
 using KeyTrace.Collect;
+using KeyTrace.Interop;
 using WpfControl = System.Windows.Controls.Control;
 
 namespace KeyTrace.Ui;
 
 /// <summary>
-/// KeyTrace 独立原生暗色桌面主窗口：
-/// 脱离浏览器也可独立查看今日概览、实时心跳、键盘热力图、应用分布与隐私配置。
+/// KeyTrace 独立原生暗色桌面主窗口：精简三栏式（实时监控 / 弱键与分布 / 设置）。
 /// </summary>
 internal sealed class MainWindow : Window
 {
-    private readonly record struct ImeOption(string Value, string Label);
-
-    private static readonly ImeOption[] ImeOptions =
-    [
-        new("auto", "自动检测 (读取系统注册表)"),
-        new("shuangpin/xiaohe", "小鹤双拼"),
-        new("shuangpin/ziranma", "自然码双拼"),
-        new("shuangpin/microsoft", "微软双拼"),
-        new("shuangpin/sogou", "搜狗双拼"),
-        new("full-pinyin", "全拼"),
-    ];
-
     private readonly string _eventsDir;
     private readonly string _baseDir;
     private readonly UserConfig _config;
     private readonly LiveTelemetry _telemetry;
     private readonly bool _isViewerMode;
 
-    private readonly Button[] _navButtons = new Button[4];
-    private readonly Border[] _navAccents = new Border[4];
-    private readonly UIElement[] _tabRoots = new UIElement[4];
+    private readonly Button[] _navButtons = new Button[3];
+    private readonly Border[] _navAccents = new Border[3];
+    private readonly UIElement[] _tabRoots = new UIElement[3];
 
+    private readonly TextBlock _pageTitleText;
+    private readonly StackPanel _rangeToolbarPanel;
     private readonly Button _todayRangeBtn;
     private readonly Button _days7RangeBtn;
-    private readonly Button _allRangeBtn;
-    private readonly TextBlock _pageTitleText;
-    private readonly TextBlock _imeBadgeText;
-    private readonly TextBlock _updatedText;
 
     private readonly Ellipse _sideStatusDot;
     private readonly TextBlock _sideStatusText;
-    private readonly Button _hudToggleBtn;
-    private readonly Button _pauseToggleBtn;
+    private readonly Button _primaryBottomBtn;
 
-    // Tab 0: Overview
+    // Tab 0: 实时监控
     private readonly TextBlock _kpiKeysValue;
     private readonly TextBlock _kpiKeysSub;
     private readonly TextBlock _kpiWpmValue;
     private readonly TextBlock _kpiWpmSub;
-    private readonly TextBlock _kpiAccValue;
-    private readonly TextBlock _kpiAccSub;
     private readonly TextBlock _kpiRightLabel;
     private readonly TextBlock _kpiRightValue;
     private readonly TextBlock _kpiRightSub;
@@ -77,43 +60,27 @@ internal sealed class MainWindow : Window
     private readonly CheckBox _hideLiveCheckOverview;
     private readonly StackPanel _liveFeedPanel;
 
-    // Tab 1: Heatmap
-    private readonly Button _modeSpBtn;
-    private readonly Button _modeEnBtn;
-    private readonly Button _modeSymBtn;
+    // Tab 1: 弱键与分布
+    private readonly CheckBox _showSpLabelsCheck;
     private readonly KeyboardHeatmapControl _heatmap;
-    private readonly TextBlock _selectedKeyInfoText;
-    private readonly Button _selectedKeyOfflineBtn;
-    private readonly Button _selectedKeyWebBtn;
-    private readonly TextBlock _weakSectionTitle;
-    private readonly UniformGrid _weakCardsGrid;
+    private readonly StackPanel _weakListPanel;
+    private readonly StackPanel _appsListPanel;
 
-    // Tab 2: Details
-    private readonly StackPanel _appsTablePanel;
-    private readonly StackPanel _typosFeedPanel;
-    private readonly StackPanel _commitsFeedPanel;
-
-    // Tab 3: Settings
+    // Tab 2: 设置
     private readonly CheckBox _miniHudCheck;
     private readonly CheckBox _hideLiveCheckSettings;
     private readonly CheckBox _captureTextCheck;
-    private readonly ComboBox _imeCombo;
-    private readonly TextBox _webUrlInput;
     private readonly TextBox _exclusionInput;
     private readonly WrapPanel _customExclusionsPanel;
-    private readonly TextBlock _taskStatusText;
     private readonly TextBlock _settingsFeedbackText;
 
     private readonly DispatcherTimer _liveTimer;
     private readonly DispatcherTimer _statsTimer;
 
     private StatsRange _range = StatsRange.Today;
-    private HeatmapDisplayMode _heatmapMode = HeatmapDisplayMode.Shuangpin;
-    private int _activeTab;
     private bool _paused;
     private bool _suppressSettingEvents;
     private bool _isLoadingStats;
-    private char? _selectedWeakChar;
     private DesktopSnapshot? _snapshot;
 
     public MainWindow(
@@ -132,30 +99,38 @@ internal sealed class MainWindow : Window
         _paused = isPausedInitial;
 
         Title = isViewerMode ? "KeyTrace · 键盘监控 (只读视图)" : "KeyTrace · 键盘监控";
-        Width = 1080;
-        Height = 720;
-        MinWidth = 880;
-        MinHeight = 600;
+        Width = 920;
+        Height = 640;
+        MinWidth = 780;
+        MinHeight = 540;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
 
         DarkTheme.ApplyDarkTitleBar(this);
         DarkTheme.ApplyWindowResources(this);
 
-        // 主框架：左侧导航 + 右侧（顶部工具栏 + 内容滚动区）
-        Grid shell = new();
-        shell.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(204) });
+        Grid shell = new() { Background = DarkTheme.BgBrush };
+        shell.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(176) });
         shell.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
         // ---------- 左侧导航栏 ----------
         _sideStatusDot = new Ellipse { Width = 8, Height = 8, VerticalAlignment = VerticalAlignment.Center };
         _sideStatusText = new TextBlock { FontSize = 12, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(7, 0, 0, 0) };
-        _hudToggleBtn = DarkTheme.CreateButton("悬浮条：关闭", compact: true);
-        _hudToggleBtn.HorizontalAlignment = HorizontalAlignment.Stretch;
-        _hudToggleBtn.Click += (_, _) => MiniHudToggled?.Invoke(!_config.ShowMiniHud);
-
-        _pauseToggleBtn = DarkTheme.CreateButton("暂停录制", compact: true);
-        _pauseToggleBtn.HorizontalAlignment = HorizontalAlignment.Stretch;
-        _pauseToggleBtn.Click += (_, _) => TogglePauseRequested?.Invoke();
+        _primaryBottomBtn = isViewerMode
+            ? DarkTheme.CreateButton("升级后台托盘服务", primary: true, compact: true)
+            : DarkTheme.CreateButton("暂停录制", compact: true);
+        _primaryBottomBtn.HorizontalAlignment = HorizontalAlignment.Stretch;
+        _primaryBottomBtn.Margin = new Thickness(0, 0, 0, 8);
+        _primaryBottomBtn.Click += (_, _) =>
+        {
+            if (_isViewerMode)
+            {
+                RunInstallTaskScript();
+            }
+            else
+            {
+                TogglePauseRequested?.Invoke();
+            }
+        };
 
         Border sidebar = BuildSidebar();
         Grid.SetColumn(sidebar, 0);
@@ -168,7 +143,7 @@ internal sealed class MainWindow : Window
 
         _pageTitleText = new TextBlock
         {
-            Text = "今日概览",
+            Text = "实时监控",
             FontSize = 17,
             FontWeight = FontWeights.SemiBold,
             Foreground = DarkTheme.TextBrush,
@@ -176,37 +151,24 @@ internal sealed class MainWindow : Window
         };
         _todayRangeBtn = DarkTheme.CreatePillButton("今日", true);
         _days7RangeBtn = DarkTheme.CreatePillButton("近 7 天", false);
-        _allRangeBtn = DarkTheme.CreatePillButton("全部", false);
-        _imeBadgeText = new TextBlock
+        _rangeToolbarPanel = new StackPanel
         {
-            Text = "小鹤双拼",
-            FontSize = 12,
-            Foreground = DarkTheme.BlueBrush,
+            Orientation = Orientation.Horizontal,
             VerticalAlignment = VerticalAlignment.Center,
-        };
-        _updatedText = new TextBlock
-        {
-            Text = "尚未加载",
-            FontSize = 12,
-            Foreground = DarkTheme.FaintBrush,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(6, 0, 6, 0),
         };
 
         Border topBar = BuildTopBar();
         Grid.SetRow(topBar, 0);
         mainArea.Children.Add(topBar);
 
-        // 初始化 4 个标签页视图
+        // Tab 0: 实时监控
         _kpiKeysValue = KpiValueText("0");
         _kpiKeysSub = KpiSubText("正在读取...");
         _kpiWpmValue = KpiValueText("0 wpm");
-        _kpiWpmSub = KpiSubText("近 30 秒实时：待机");
-        _kpiAccValue = KpiValueText("100.0%");
-        _kpiAccSub = KpiSubText("确认错击 0");
-        _kpiRightLabel = new TextBlock { Text = "退格纠错", FontSize = 12, Foreground = DarkTheme.DimBrush };
-        _kpiRightValue = KpiValueText("0");
-        _kpiRightSub = KpiSubText("今日日志 0 KB");
+        _kpiWpmSub = KpiSubText("实时 30s：待机");
+        _kpiRightLabel = new TextBlock { Text = "准确率", FontSize = 12, Foreground = DarkTheme.DimBrush };
+        _kpiRightValue = KpiValueText("100.0%");
+        _kpiRightSub = KpiSubText("确认纠错 0 次");
         _guardText = new TextBlock { FontSize = 12.5, Foreground = DarkTheme.AmberBrush, TextWrapping = TextWrapping.Wrap };
         _guardBanner = new Border
         {
@@ -214,53 +176,33 @@ internal sealed class MainWindow : Window
             BorderBrush = DarkTheme.AmberBrush,
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(14, 10, 14, 10),
-            Margin = new Thickness(0, 0, 0, 16),
+            Padding = new Thickness(12, 9, 12, 9),
+            Margin = new Thickness(0, 0, 0, 14),
             Visibility = Visibility.Collapsed,
             Child = _guardText,
         };
-        _chartTitleText = new TextBlock { Text = "今日每小时击键分布", FontSize = 14, FontWeight = FontWeights.SemiBold, Foreground = DarkTheme.TextBrush };
+        _chartTitleText = new TextBlock { Text = "今日分时段击键 (24 小时)", FontSize = 13.5, FontWeight = FontWeights.SemiBold, Foreground = DarkTheme.TextBrush };
         _chartMetaText = new TextBlock { Text = "", FontSize = 12, Foreground = DarkTheme.DimBrush, VerticalAlignment = VerticalAlignment.Center };
-        _chartGrid = new Grid { Height = 152, Margin = new Thickness(0, 12, 0, 0) };
-        _hideLiveCheckOverview = new CheckBox { Content = "隐私：隐藏明文", IsChecked = _config.HideLiveText };
+        _chartGrid = new Grid { Height = 132, Margin = new Thickness(0, 10, 0, 0) };
+        _hideLiveCheckOverview = new CheckBox { Content = "隐藏明文", IsChecked = _config.HideLiveText };
         _liveFeedPanel = new StackPanel();
-        _tabRoots[0] = BuildOverviewTab();
+        _tabRoots[0] = BuildMonitorTab();
 
-        _modeSpBtn = DarkTheme.CreatePillButton("双拼键帽", true);
-        _modeEnBtn = DarkTheme.CreatePillButton("纯英文", false);
-        _modeSymBtn = DarkTheme.CreatePillButton("编程符号", false);
-        _heatmap = new KeyboardHeatmapControl { Margin = new Thickness(0, 0, 0, 14) };
-        _selectedKeyInfoText = new TextBlock
-        {
-            Text = "提示：点击键盘上任意字母键查看详情或一键生成专项练习",
-            FontSize = 12.5,
-            Foreground = DarkTheme.DimBrush,
-            VerticalAlignment = VerticalAlignment.Center,
-            TextWrapping = TextWrapping.Wrap,
-        };
-        _selectedKeyOfflineBtn = DarkTheme.CreateButton("离线单字练习", primary: true, compact: true);
-        _selectedKeyOfflineBtn.Visibility = Visibility.Collapsed;
-        _selectedKeyWebBtn = DarkTheme.CreateButton("去网页练", compact: true);
-        _selectedKeyWebBtn.Visibility = Visibility.Collapsed;
-        _weakSectionTitle = DarkTheme.SectionHeader("日常最容易错 / 最慢的键 (Top 12)");
-        _weakCardsGrid = new UniformGrid { Columns = 3 };
-        _tabRoots[1] = BuildHeatmapTab();
+        // Tab 1: 弱键与分布
+        _showSpLabelsCheck = new CheckBox { Content = "显示双拼键帽", IsChecked = true, VerticalAlignment = VerticalAlignment.Center };
+        _heatmap = new KeyboardHeatmapControl();
+        _weakListPanel = new StackPanel();
+        _appsListPanel = new StackPanel();
+        _tabRoots[1] = BuildWeakAndAppsTab();
 
-        _appsTablePanel = new StackPanel();
-        _typosFeedPanel = new StackPanel();
-        _commitsFeedPanel = new StackPanel();
-        _tabRoots[2] = BuildDetailsTab();
-
-        _miniHudCheck = new CheckBox { Content = "开启桌面悬浮状态条 (Mini HUD，可拖动、不抢输入焦点)", IsChecked = _config.ShowMiniHud };
-        _hideLiveCheckSettings = new CheckBox { Content = "隐私模式：隐藏实时心跳与明细列表里的上屏明文与上下文词", IsChecked = _config.HideLiveText, Margin = new Thickness(0, 10, 0, 0) };
-        _captureTextCheck = new CheckBox { Content = "启用 UIA 上屏文本与中文纠错归因（取消勾选则仅记录物理按键，不读任何文字）", IsChecked = _config.CaptureText };
-        _imeCombo = new ComboBox { Width = 280, HorizontalAlignment = HorizontalAlignment.Left };
-        _webUrlInput = new TextBox { Width = 320, Text = _config.WebPracticeUrl };
-        _exclusionInput = new TextBox { Width = 240 };
+        // Tab 2: 设置
+        _miniHudCheck = new CheckBox { Content = "显示桌面悬浮状态条 (Mini HUD，可拖动、不抢焦点)", IsChecked = _config.ShowMiniHud };
+        _hideLiveCheckSettings = new CheckBox { Content = "隐私模式：隐藏实时记录里的明文", IsChecked = _config.HideLiveText, Margin = new Thickness(0, 10, 0, 0) };
+        _captureTextCheck = new CheckBox { Content = "读取上屏文字（关闭则仅统计物理按键）", IsChecked = _config.CaptureText, Margin = new Thickness(0, 10, 0, 0) };
+        _exclusionInput = new TextBox { Width = 220 };
         _customExclusionsPanel = new WrapPanel { Margin = new Thickness(0, 10, 0, 0) };
-        _taskStatusText = new TextBlock { Text = "正在检测开机高权限计划任务状态...", FontSize = 12.5, Foreground = DarkTheme.DimBrush };
-        _settingsFeedbackText = new TextBlock { Text = "", FontSize = 12.5, Foreground = DarkTheme.GreenBrush, Margin = new Thickness(0, 10, 0, 0) };
-        _tabRoots[3] = BuildSettingsTab();
+        _settingsFeedbackText = new TextBlock { Text = "", FontSize = 12, Foreground = DarkTheme.GreenBrush, Margin = new Thickness(0, 10, 0, 0) };
+        _tabRoots[2] = BuildSettingsTab();
 
         Grid tabHost = new();
         for (int i = 0; i < _tabRoots.Length; i++)
@@ -273,7 +215,7 @@ internal sealed class MainWindow : Window
         {
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-            Padding = new Thickness(24, 20, 24, 24),
+            Padding = new Thickness(20, 14, 20, 18),
             Content = tabHost,
         };
         Grid.SetRow(scroll, 1);
@@ -302,7 +244,6 @@ internal sealed class MainWindow : Window
                 _statsTimer.Start();
                 RefreshLiveTick();
                 _ = ReloadStatsAsync();
-                _ = RefreshScheduledTaskStatusAsync();
             }
             else
             {
@@ -345,6 +286,12 @@ internal sealed class MainWindow : Window
         Topmost = true;
         Topmost = false;
         Focus();
+
+        IntPtr hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd != IntPtr.Zero)
+        {
+            _ = NativeMethods.SetForegroundWindow(hwnd);
+        }
     }
 
     public void SelectTab(int index)
@@ -354,9 +301,9 @@ internal sealed class MainWindow : Window
             return;
         }
 
-        _activeTab = index;
-        string[] titles = ["今日概览", "键盘热力图", "应用与纠错", "设置与隐私"];
+        string[] titles = ["实时监控", "弱键与分布", "设置"];
         _pageTitleText.Text = titles[index];
+        _rangeToolbarPanel.Visibility = index == 2 ? Visibility.Collapsed : Visibility.Visible;
 
         for (int i = 0; i < _tabRoots.Length; i++)
         {
@@ -367,11 +314,6 @@ internal sealed class MainWindow : Window
             _navButtons[i].Foreground = active ? DarkTheme.TextBrush : DarkTheme.DimBrush;
             _navButtons[i].FontWeight = active ? FontWeights.SemiBold : FontWeights.Normal;
         }
-
-        if (index == 3)
-        {
-            _ = RefreshScheduledTaskStatusAsync();
-        }
     }
 
     public void SetPaused(bool paused)
@@ -380,18 +322,16 @@ internal sealed class MainWindow : Window
         if (_isViewerMode)
         {
             _sideStatusDot.Fill = DarkTheme.BlueBrush;
-            _sideStatusText.Text = "只读视图 · 同步磁盘";
+            _sideStatusText.Text = "只读视图 · 同步中";
             _sideStatusText.Foreground = DarkTheme.BlueBrush;
-            _pauseToggleBtn.IsEnabled = false;
-            _pauseToggleBtn.Content = "后台进程控制录制";
+            _primaryBottomBtn.Content = "升级后台托盘服务";
         }
         else
         {
             _sideStatusDot.Fill = paused ? DarkTheme.FaintBrush : DarkTheme.GreenBrush;
-            _sideStatusText.Text = paused ? "采集已暂停" : "录制活跃中";
+            _sideStatusText.Text = paused ? "采集已暂停" : "录制中";
             _sideStatusText.Foreground = paused ? DarkTheme.DimBrush : DarkTheme.GreenBrush;
-            _pauseToggleBtn.IsEnabled = true;
-            _pauseToggleBtn.Content = paused ? "继续录制 (Ctrl+Alt+P)" : "暂停录制 (Ctrl+Alt+P)";
+            _primaryBottomBtn.Content = paused ? "继续录制" : "暂停录制";
         }
     }
 
@@ -400,7 +340,6 @@ internal sealed class MainWindow : Window
         _suppressSettingEvents = true;
         _config.ShowMiniHud = enabled;
         _miniHudCheck.IsChecked = enabled;
-        _hudToggleBtn.Content = enabled ? "悬浮条：已开启" : "悬浮条：已关闭";
         _suppressSettingEvents = false;
     }
 
@@ -419,9 +358,9 @@ internal sealed class MainWindow : Window
             SeedTelemetryFeedFromSnapshot(snap);
             ApplySnapshot(snap);
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            _updatedText.Text = $"加载失败：{ex.Message}";
+            // 后台读取异常时不破坏现有展示
         }
         finally
         {
@@ -432,10 +371,6 @@ internal sealed class MainWindow : Window
     public void ApplySnapshot(DesktopSnapshot snap)
     {
         _snapshot = snap;
-        _imeBadgeText.Text = FormatImeLabel(snap.ImeName);
-        _imeBadgeText.ToolTip = $"当前识别方案：{snap.ImeName}";
-        _updatedText.Text = $"更新于 {snap.GeneratedAt.ToString("HH:mm:ss", CultureInfo.InvariantCulture)}";
-
         RefreshLiveMetricsDisplay(snap, _telemetry.Snapshot());
 
         if (snap.AccuracyReport.Triggered)
@@ -443,7 +378,7 @@ internal sealed class MainWindow : Window
             string topNames = string.Join("、", snap.AccuracyReport.TopErrorKeys.Take(3).Select(k => k.Name));
             _guardText.Text = string.Create(
                 CultureInfo.InvariantCulture,
-                $"准确率护栏提醒：当前准确率 {snap.AccuracyReport.AccuracyPercent:0.0}%（低于 {snap.AccuracyReport.ThresholdPercent:0.#}% 门槛）。主要误按：{topNames}，建议适当放慢节奏保准。");
+                $"准确率提醒：当前 {snap.AccuracyReport.AccuracyPercent:0.0}%（低于 {snap.AccuracyReport.ThresholdPercent:0.#}%）。主要误按：{topNames}，建议适当放慢节奏保准。");
             _guardBanner.Visibility = Visibility.Visible;
         }
         else
@@ -453,9 +388,8 @@ internal sealed class MainWindow : Window
 
         RebuildTrendChart(snap);
         _heatmap.UpdateData(snap.KeysByVk);
-        RebuildWeakCards(snap);
-        RebuildAppsTable(snap);
-        RebuildDetailsFeeds(snap);
+        RebuildWeakList(snap);
+        RebuildAppsList(snap);
     }
 
     public void RefreshLiveTick()
@@ -504,24 +438,19 @@ internal sealed class MainWindow : Window
         double mins = (snap.TextActiveMs > 0 ? snap.TextActiveMs : snap.ActiveMs) / 60000.0;
         _kpiWpmSub.Text = string.Create(CultureInfo.InvariantCulture, $"实时 {liveRate} · 活跃 {mins:0.0} 分");
 
-        _kpiAccValue.Text = string.Create(CultureInfo.InvariantCulture, $"{snap.AccuracyPct:0.0}%");
-        _kpiAccSub.Text = string.Create(
-            CultureInfo.InvariantCulture,
-            $"确认错击 {snap.Typos:N0} · 选字错 {snap.SelectionErrors:N0}");
-
         if (!string.IsNullOrEmpty(live.LastCorrectionText))
         {
             _kpiRightLabel.Text = "刚刚发生纠错";
             _kpiRightValue.Text = live.LastCorrectionText;
             _kpiRightValue.Foreground = DarkTheme.AmberBrush;
-            _kpiRightSub.Text = string.IsNullOrEmpty(live.CurrentExe) ? "8 秒内捕获" : $"来源：{live.CurrentExe}";
+            _kpiRightSub.Text = string.Create(CultureInfo.InvariantCulture, $"准确率 {snap.AccuracyPct:0.0}% · {(string.IsNullOrEmpty(live.CurrentExe) ? "8 秒内捕获" : live.CurrentExe)}");
         }
         else
         {
-            _kpiRightLabel.Text = "退格纠错";
-            _kpiRightValue.Text = snap.Typos.ToString("N0", CultureInfo.InvariantCulture);
+            _kpiRightLabel.Text = "准确率";
+            _kpiRightValue.Text = string.Create(CultureInfo.InvariantCulture, $"{snap.AccuracyPct:0.0}%");
             _kpiRightValue.Foreground = DarkTheme.TextBrush;
-            _kpiRightSub.Text = string.Create(CultureInfo.InvariantCulture, $"今日日志 {FormatBytes(snap.TodayLogBytes)}");
+            _kpiRightSub.Text = string.Create(CultureInfo.InvariantCulture, $"确认纠错 {snap.Typos:N0} 次");
         }
     }
 
@@ -529,26 +458,16 @@ internal sealed class MainWindow : Window
     {
         DockPanel layout = new() { LastChildFill = true };
 
-        StackPanel top = new() { Margin = new Thickness(16, 20, 16, 16) };
-        StackPanel titleRow = new() { Orientation = Orientation.Horizontal };
-        titleRow.Children.Add(new TextBlock
+        StackPanel top = new() { Margin = new Thickness(16, 18, 14, 14) };
+        top.Children.Add(new TextBlock
         {
             Text = "KeyTrace",
-            FontSize = 19,
+            FontSize = 18,
             FontWeight = FontWeights.SemiBold,
             Foreground = DarkTheme.TextBrush,
         });
-        titleRow.Children.Add(new TextBlock
-        {
-            Text = "桌面版",
-            FontSize = 12,
-            Foreground = DarkTheme.DimBrush,
-            VerticalAlignment = VerticalAlignment.Bottom,
-            Margin = new Thickness(7, 0, 0, 2),
-        });
-        top.Children.Add(titleRow);
 
-        StackPanel statusRow = new() { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 8, 0, 0) };
+        StackPanel statusRow = new() { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 7, 0, 0) };
         statusRow.Children.Add(_sideStatusDot);
         statusRow.Children.Add(_sideStatusText);
         top.Children.Add(statusRow);
@@ -556,46 +475,29 @@ internal sealed class MainWindow : Window
         DockPanel.SetDock(top, Dock.Top);
         layout.Children.Add(top);
 
-        StackPanel bottom = new() { Margin = new Thickness(14, 12, 14, 16) };
-        _hudToggleBtn.Margin = new Thickness(0, 0, 0, 8);
-        bottom.Children.Add(_hudToggleBtn);
-        bottom.Children.Add(_pauseToggleBtn);
+        StackPanel bottom = new() { Margin = new Thickness(12, 12, 12, 16) };
+        bottom.Children.Add(_primaryBottomBtn);
 
-        if (_isViewerMode)
-        {
-            bottom.Children.Add(new Border
-            {
-                Background = DarkTheme.AmberBgBrush,
-                BorderBrush = DarkTheme.AmberBrush,
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(6),
-                Padding = new Thickness(10, 8, 10, 8),
-                Margin = new Thickness(0, 10, 0, 0),
-                Child = new TextBlock
-                {
-                    Text = "独立只读视图：后台已在采集，此窗口每秒增量同步磁盘日志。",
-                    FontSize = 12,
-                    Foreground = DarkTheme.AmberBrush,
-                    TextWrapping = TextWrapping.Wrap,
-                },
-            });
-        }
+        Button webBtn = DarkTheme.CreateButton("打开网页练习", compact: true);
+        webBtn.HorizontalAlignment = HorizontalAlignment.Stretch;
+        webBtn.Click += (_, _) => OpenWebRequested?.Invoke(_config.WebPracticeUrl);
+        bottom.Children.Add(webBtn);
 
         DockPanel.SetDock(bottom, Dock.Bottom);
         layout.Children.Add(bottom);
 
-        StackPanel navList = new() { Margin = new Thickness(10, 4, 10, 8) };
-        string[] labels = ["今日概览", "键盘热力图", "应用与纠错", "设置与隐私"];
+        StackPanel navList = new() { Margin = new Thickness(8, 4, 8, 8) };
+        string[] labels = ["实时监控", "弱键与分布", "设置"];
         for (int i = 0; i < labels.Length; i++)
         {
             int idx = i;
             Border accent = new()
             {
                 Width = 3,
-                Height = 18,
+                Height = 17,
                 CornerRadius = new CornerRadius(1.5),
                 VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(0, 0, 10, 0),
+                Margin = new Thickness(0, 0, 9, 0),
             };
             TextBlock label = new()
             {
@@ -619,8 +521,8 @@ internal sealed class MainWindow : Window
                 Foreground = DarkTheme.DimBrush,
                 Background = Brushes.Transparent,
                 BorderThickness = new Thickness(0),
+                Style = CreateNavButtonStyle(),
             };
-            navBtn.Style = CreateNavButtonStyle();
             navBtn.Click += (_, _) => SelectTab(idx);
 
             _navAccents[i] = accent;
@@ -645,69 +547,40 @@ internal sealed class MainWindow : Window
         DockPanel.SetDock(_pageTitleText, Dock.Left);
         bar.Children.Add(_pageTitleText);
 
-        StackPanel right = new()
-        {
-            Orientation = Orientation.Horizontal,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        DockPanel.SetDock(right, Dock.Right);
-
-        _todayRangeBtn.Margin = new Thickness(0, 0, 4, 0);
-        _days7RangeBtn.Margin = new Thickness(0, 0, 4, 0);
-        _allRangeBtn.Margin = new Thickness(0, 0, 10, 0);
-
-        Border imePill = new()
-        {
-            Background = DarkTheme.BlueBgBrush,
-            BorderBrush = DarkTheme.BlueBrush,
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(5),
-            Padding = new Thickness(9, 4, 9, 4),
-            Margin = new Thickness(0, 0, 8, 0),
-            Child = _imeBadgeText,
-        };
+        _todayRangeBtn.Margin = new Thickness(0, 0, 6, 0);
+        _days7RangeBtn.Margin = new Thickness(0, 0, 8, 0);
 
         Button refreshBtn = DarkTheme.CreateButton("刷新", compact: true);
-        refreshBtn.Margin = new Thickness(0, 0, 8, 0);
         refreshBtn.Click += async (_, _) => await ReloadStatsAsync();
 
-        Button webBtn = DarkTheme.CreateButton("去网页练习", primary: true, compact: true);
-        webBtn.Click += (_, _) => OpenWebRequested?.Invoke(_config.WebPracticeUrl);
-
-        right.Children.Add(_todayRangeBtn);
-        right.Children.Add(_days7RangeBtn);
-        right.Children.Add(_allRangeBtn);
-        right.Children.Add(imePill);
-        right.Children.Add(_updatedText);
-        right.Children.Add(refreshBtn);
-        right.Children.Add(webBtn);
-
-        bar.Children.Add(right);
+        _rangeToolbarPanel.Children.Add(_todayRangeBtn);
+        _rangeToolbarPanel.Children.Add(_days7RangeBtn);
+        _rangeToolbarPanel.Children.Add(refreshBtn);
+        DockPanel.SetDock(_rangeToolbarPanel, Dock.Right);
+        bar.Children.Add(_rangeToolbarPanel);
 
         return new Border
         {
             Background = DarkTheme.BgBrush,
             BorderBrush = DarkTheme.BorderBrush,
             BorderThickness = new Thickness(0, 0, 0, 1),
-            Padding = new Thickness(24, 12, 24, 12),
+            Padding = new Thickness(22, 12, 22, 12),
             Child = bar,
         };
     }
 
-    private UIElement BuildOverviewTab()
+    private UIElement BuildMonitorTab()
     {
         StackPanel root = new();
 
-        UniformGrid kpis = new() { Columns = 4, Margin = new Thickness(0, 0, 0, 16) };
-        kpis.Children.Add(BuildKpiCard("有效击键", _kpiKeysValue, _kpiKeysSub, new Thickness(0, 0, 12, 0)));
-        kpis.Children.Add(BuildKpiCard("平均速度", _kpiWpmValue, _kpiWpmSub, new Thickness(0, 0, 12, 0)));
-        kpis.Children.Add(BuildKpiCard("准确率", _kpiAccValue, _kpiAccSub, new Thickness(0, 0, 12, 0)));
+        UniformGrid kpis = new() { Columns = 3, Margin = new Thickness(0, 0, 0, 14) };
+        kpis.Children.Add(BuildKpiCard("击键", _kpiKeysValue, _kpiKeysSub, new Thickness(0, 0, 12, 0)));
+        kpis.Children.Add(BuildKpiCard("速度", _kpiWpmValue, _kpiWpmSub, new Thickness(0, 0, 12, 0)));
         kpis.Children.Add(BuildKpiCard(_kpiRightLabel, _kpiRightValue, _kpiRightSub, new Thickness(0)));
         root.Children.Add(kpis);
 
         root.Children.Add(_guardBanner);
 
-        // 趋势图
         StackPanel chartStack = new();
         DockPanel chartHead = new() { LastChildFill = false };
         DockPanel.SetDock(_chartTitleText, Dock.Left);
@@ -717,17 +590,16 @@ internal sealed class MainWindow : Window
         chartStack.Children.Add(chartHead);
         chartStack.Children.Add(_chartGrid);
 
-        Border chartCard = DarkTheme.CreateCard(chartStack);
-        chartCard.Margin = new Thickness(0, 0, 0, 16);
+        Border chartCard = DarkTheme.CreateCard(chartStack, new Thickness(14));
+        chartCard.Margin = new Thickness(0, 0, 0, 14);
         root.Children.Add(chartCard);
 
-        // 实时心跳事件流
-        StackPanel feedCardBody = new();
-        DockPanel feedHead = new() { LastChildFill = false, Margin = new Thickness(0, 0, 0, 10) };
+        StackPanel feedBody = new();
+        DockPanel feedHead = new() { LastChildFill = false, Margin = new Thickness(0, 0, 0, 8) };
         TextBlock feedTitle = new()
         {
-            Text = "实时心跳事件流（近期上屏与纠错）",
-            FontSize = 14,
+            Text = "实时记录流",
+            FontSize = 13.5,
             FontWeight = FontWeights.SemiBold,
             Foreground = DarkTheme.TextBrush,
             VerticalAlignment = VerticalAlignment.Center,
@@ -736,91 +608,64 @@ internal sealed class MainWindow : Window
         DockPanel.SetDock(_hideLiveCheckOverview, Dock.Right);
         feedHead.Children.Add(feedTitle);
         feedHead.Children.Add(_hideLiveCheckOverview);
-        feedCardBody.Children.Add(feedHead);
-        feedCardBody.Children.Add(_liveFeedPanel);
+        feedBody.Children.Add(feedHead);
+        feedBody.Children.Add(_liveFeedPanel);
 
-        root.Children.Add(DarkTheme.CreateCard(feedCardBody));
+        root.Children.Add(DarkTheme.CreateCard(feedBody, new Thickness(14)));
         return root;
     }
 
-    private UIElement BuildHeatmapTab()
+    private UIElement BuildWeakAndAppsTab()
     {
         StackPanel root = new();
 
-        DockPanel topControls = new() { LastChildFill = false, Margin = new Thickness(0, 0, 0, 12) };
-        StackPanel modePills = new() { Orientation = Orientation.Horizontal };
-        _modeSpBtn.Margin = new Thickness(0, 0, 6, 0);
-        _modeEnBtn.Margin = new Thickness(0, 0, 6, 0);
-        modePills.Children.Add(_modeSpBtn);
-        modePills.Children.Add(_modeEnBtn);
-        modePills.Children.Add(_modeSymBtn);
-        DockPanel.SetDock(modePills, Dock.Left);
-        topControls.Children.Add(modePills);
+        DockPanel heatBar = new() { LastChildFill = false, Margin = new Thickness(0, 0, 0, 10) };
+        StackPanel leftControls = new() { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        leftControls.Children.Add(new TextBlock
+        {
+            Text = "按键热力图",
+            FontSize = 14,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = DarkTheme.TextBrush,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 14, 0),
+        });
+        leftControls.Children.Add(_showSpLabelsCheck);
+        DockPanel.SetDock(leftControls, Dock.Left);
+        heatBar.Children.Add(leftControls);
 
         StackPanel legend = new() { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-        legend.Children.Add(LegendChip(DarkTheme.HeatNoneBrush, "无数据/零错"));
+        legend.Children.Add(LegendChip(DarkTheme.HeatNoneBrush, "无错"));
         legend.Children.Add(LegendChip(DarkTheme.HeatMildBrush, "轻微"));
         legend.Children.Add(LegendChip(DarkTheme.HeatWarnBrush, "偏弱"));
-        legend.Children.Add(LegendChip(DarkTheme.HeatWeakBrush, "弱"));
         legend.Children.Add(LegendChip(DarkTheme.HeatSevereBrush, "明显弱"));
         DockPanel.SetDock(legend, Dock.Right);
-        topControls.Children.Add(legend);
-        root.Children.Add(topControls);
+        heatBar.Children.Add(legend);
 
+        root.Children.Add(heatBar);
+
+        _heatmap.Margin = new Thickness(0, 0, 0, 12);
         root.Children.Add(_heatmap);
-
-        // 选中键动作栏
-        DockPanel selectedRow = new() { LastChildFill = true };
-        StackPanel selectedBtns = new() { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0) };
-        _selectedKeyOfflineBtn.Margin = new Thickness(0, 0, 8, 0);
-        selectedBtns.Children.Add(_selectedKeyOfflineBtn);
-        selectedBtns.Children.Add(_selectedKeyWebBtn);
-        DockPanel.SetDock(selectedBtns, Dock.Right);
-        selectedRow.Children.Add(selectedBtns);
-        selectedRow.Children.Add(_selectedKeyInfoText);
-
-        Border selectedBar = DarkTheme.CreateCard(selectedRow, new Thickness(14, 10, 14, 10));
-        selectedBar.Margin = new Thickness(0, 0, 0, 18);
-        root.Children.Add(selectedBar);
-
-        root.Children.Add(_weakSectionTitle);
-        root.Children.Add(_weakCardsGrid);
-
-        return root;
-    }
-
-    private UIElement BuildDetailsTab()
-    {
-        StackPanel root = new();
-
-        StackPanel appsStack = new();
-        appsStack.Children.Add(DarkTheme.SectionHeader("分应用打字分布"));
-        appsStack.Children.Add(_appsTablePanel);
-        Border appsCard = DarkTheme.CreateCard(appsStack);
-        appsCard.Margin = new Thickness(0, 0, 0, 16);
-        root.Children.Add(appsCard);
 
         Grid bottom = new();
         bottom.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        bottom.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(16) });
+        bottom.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
         bottom.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
-        StackPanel typosStack = new();
-        typosStack.Children.Add(DarkTheme.SectionHeader("最近真实纠错还原"));
-        typosStack.Children.Add(_typosFeedPanel);
-        Border typosCard = DarkTheme.CreateCard(typosStack);
-        typosCard.VerticalAlignment = VerticalAlignment.Top;
-        Grid.SetColumn(typosCard, 0);
+        StackPanel weakStack = new();
+        weakStack.Children.Add(DarkTheme.SectionHeader("最弱的 6 个键"));
+        weakStack.Children.Add(_weakListPanel);
+        Border weakCard = DarkTheme.CreateCard(weakStack, new Thickness(14, 12, 14, 10));
+        Grid.SetColumn(weakCard, 0);
 
-        StackPanel commitsStack = new();
-        commitsStack.Children.Add(DarkTheme.SectionHeader("最近上屏片段"));
-        commitsStack.Children.Add(_commitsFeedPanel);
-        Border commitsCard = DarkTheme.CreateCard(commitsStack);
-        commitsCard.VerticalAlignment = VerticalAlignment.Top;
-        Grid.SetColumn(commitsCard, 2);
+        StackPanel appsStack = new();
+        appsStack.Children.Add(DarkTheme.SectionHeader("常用软件 Top 6"));
+        appsStack.Children.Add(_appsListPanel);
+        Border appsCard = DarkTheme.CreateCard(appsStack, new Thickness(14, 12, 14, 10));
+        Grid.SetColumn(appsCard, 2);
 
-        bottom.Children.Add(typosCard);
-        bottom.Children.Add(commitsCard);
+        bottom.Children.Add(weakCard);
+        bottom.Children.Add(appsCard);
         root.Children.Add(bottom);
 
         return root;
@@ -828,158 +673,61 @@ internal sealed class MainWindow : Window
 
     private UIElement BuildSettingsTab()
     {
-        StackPanel root = new() { MaxWidth = 780, HorizontalAlignment = HorizontalAlignment.Left };
+        StackPanel root = new() { MaxWidth = 680, HorizontalAlignment = HorizontalAlignment.Left };
 
-        // 1. 窗口与存在感
-        StackPanel winStack = new();
-        winStack.Children.Add(DarkTheme.SectionHeader("窗口与存在感"));
-        winStack.Children.Add(_miniHudCheck);
-        winStack.Children.Add(_hideLiveCheckSettings);
+        StackPanel recStack = new();
+        recStack.Children.Add(DarkTheme.SectionHeader("录制与显示"));
+        recStack.Children.Add(_miniHudCheck);
+        recStack.Children.Add(_hideLiveCheckSettings);
+        recStack.Children.Add(_captureTextCheck);
+        Border recCard = DarkTheme.CreateCard(recStack);
+        recCard.Margin = new Thickness(0, 0, 0, 14);
+        root.Children.Add(recCard);
 
-        StackPanel urlRow = new() { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 14, 0, 0) };
-        urlRow.Children.Add(new TextBlock
-        {
-            Text = "网页练习地址：",
-            FontSize = 12.5,
-            Foreground = DarkTheme.DimBrush,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(0, 0, 8, 0),
-        });
-        _webUrlInput.Margin = new Thickness(0, 0, 8, 0);
-        Button saveUrlBtn = DarkTheme.CreateButton("保存", compact: true);
-        saveUrlBtn.Click += (_, _) =>
-        {
-            string val = _webUrlInput.Text.Trim();
-            _config.WebPracticeUrl = string.IsNullOrEmpty(val) ? "http://localhost:3000/" : val;
-            _webUrlInput.Text = _config.WebPracticeUrl;
-            SaveConfigAndNotify("已更新网页练习地址。");
-        };
-        urlRow.Children.Add(_webUrlInput);
-        urlRow.Children.Add(saveUrlBtn);
-        winStack.Children.Add(urlRow);
-
-        Border winCard = DarkTheme.CreateCard(winStack);
-        winCard.Margin = new Thickness(0, 0, 0, 14);
-        root.Children.Add(winCard);
-
-        // 2. 采集与输入法方案
-        StackPanel collectStack = new();
-        collectStack.Children.Add(DarkTheme.SectionHeader("采集与输入法方案"));
-        collectStack.Children.Add(_captureTextCheck);
-
-        foreach (ImeOption opt in ImeOptions)
-        {
-            _imeCombo.Items.Add(opt.Label);
-        }
-
-        string currentIme = string.IsNullOrWhiteSpace(_config.ImeOverride) ? "auto" : _config.ImeOverride;
-        int selectedIdx = Array.FindIndex(ImeOptions, o => string.Equals(o.Value, currentIme, StringComparison.OrdinalIgnoreCase));
-        _imeCombo.SelectedIndex = selectedIdx >= 0 ? selectedIdx : 0;
-
-        StackPanel imeRow = new() { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 12, 0, 0) };
-        imeRow.Children.Add(new TextBlock
-        {
-            Text = "输入法方案：",
-            FontSize = 12.5,
-            Foreground = DarkTheme.DimBrush,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(0, 0, 8, 0),
-        });
-        imeRow.Children.Add(_imeCombo);
-        collectStack.Children.Add(imeRow);
-        collectStack.Children.Add(new TextBlock
-        {
-            Text = "第三方输入法（搜狗/微信/Rime 等）不在微软注册表内，建议在此手动指定对应方案，后续切换立即写入日志 meta。",
-            FontSize = 12,
-            Foreground = DarkTheme.FaintBrush,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 8, 0, 0),
-        });
-
-        Border collectCard = DarkTheme.CreateCard(collectStack);
-        collectCard.Margin = new Thickness(0, 0, 0, 14);
-        root.Children.Add(collectCard);
-
-        // 3. 进程排除名单
         StackPanel excStack = new();
-        excStack.Children.Add(DarkTheme.SectionHeader("进程排除名单（密码管理器 / 敏感程序）"));
+        excStack.Children.Add(DarkTheme.SectionHeader("隐私排除与维护"));
         excStack.Children.Add(new TextBlock
         {
-            Text = "内置排除（始终生效）：",
+            Text = "已内置排除 1Password / KeePass / Bitwarden 等 9 款密码管理器，命中时不记录任何按键与文字。",
             FontSize = 12,
             Foreground = DarkTheme.DimBrush,
-            Margin = new Thickness(0, 0, 0, 6),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 12),
         });
 
-        WrapPanel builtInWrap = new() { Margin = new Thickness(0, 0, 0, 12) };
-        foreach (string name in ExclusionList.BuiltInNames)
-        {
-            builtInWrap.Children.Add(new Border
-            {
-                Background = DarkTheme.ElevatedBrush,
-                BorderBrush = DarkTheme.BorderBrush,
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(12),
-                Padding = new Thickness(9, 3, 9, 3),
-                Margin = new Thickness(0, 0, 6, 6),
-                Child = new TextBlock { Text = name, FontSize = 12, FontFamily = DarkTheme.MonoFont, Foreground = DarkTheme.DimBrush },
-            });
-        }
-        excStack.Children.Add(builtInWrap);
-
-        StackPanel addExcRow = new() { Orientation = Orientation.Horizontal };
+        StackPanel addRow = new() { Orientation = Orientation.Horizontal };
         _exclusionInput.Margin = new Thickness(0, 0, 8, 0);
-        _exclusionInput.ToolTip = "输入可执行文件名，例如 bank.exe 或 keepass.exe";
-        Button addExcBtn = DarkTheme.CreateButton("添加自定义排除", compact: true);
-        addExcBtn.Click += (_, _) => AddCustomExclusion();
-        addExcRow.Children.Add(_exclusionInput);
-        addExcRow.Children.Add(addExcBtn);
-        addExcRow.Children.Add(new TextBlock
+        _exclusionInput.ToolTip = "输入进程文件名，例如 bank.exe";
+        Button addBtn = DarkTheme.CreateButton("添加排除进程", compact: true);
+        addBtn.Click += (_, _) => AddCustomExclusion();
+        addRow.Children.Add(_exclusionInput);
+        addRow.Children.Add(addBtn);
+        addRow.Children.Add(new TextBlock
         {
-            Text = "例如 bank.exe（不含路径）",
+            Text = "例如 bank.exe",
             FontSize = 12,
             Foreground = DarkTheme.FaintBrush,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(10, 0, 0, 0),
         });
-        excStack.Children.Add(addExcRow);
+        excStack.Children.Add(addRow);
         excStack.Children.Add(_customExclusionsPanel);
         RebuildCustomExclusionChips();
 
-        Border excCard = DarkTheme.CreateCard(excStack);
-        excCard.Margin = new Thickness(0, 0, 0, 14);
-        root.Children.Add(excCard);
+        StackPanel actionRow = new() { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 14, 0, 0) };
+        Button dataBtn = DarkTheme.CreateButton("打开数据目录", compact: true);
+        dataBtn.Margin = new Thickness(0, 0, 8, 0);
+        dataBtn.Click += (_, _) => DataDirectoryRequested?.Invoke();
 
-        // 4. 系统集成与工具
-        StackPanel sysStack = new();
-        sysStack.Children.Add(DarkTheme.SectionHeader("系统集成与离线工具"));
-        sysStack.Children.Add(_taskStatusText);
+        Button taskBtn = DarkTheme.CreateButton("安装/更新后台托盘服务", compact: true);
+        taskBtn.Click += (_, _) => RunInstallTaskScript();
 
-        WrapPanel toolsRow = new() { Margin = new Thickness(0, 12, 0, 0) };
-        Button installTaskBtn = DarkTheme.CreateButton("运行安装/更新自启脚本", compact: true);
-        installTaskBtn.Margin = new Thickness(0, 0, 8, 8);
-        installTaskBtn.Click += (_, _) => RunInstallTaskScript();
+        actionRow.Children.Add(dataBtn);
+        actionRow.Children.Add(taskBtn);
+        excStack.Children.Add(actionRow);
+        excStack.Children.Add(_settingsFeedbackText);
 
-        Button openDataBtn = DarkTheme.CreateButton("打开数据目录", compact: true);
-        openDataBtn.Margin = new Thickness(0, 0, 8, 8);
-        openDataBtn.Click += (_, _) => DataDirectoryRequested?.Invoke();
-
-        Button exportReportBtn = DarkTheme.CreateButton("生成离线 HTML 看板", compact: true);
-        exportReportBtn.Margin = new Thickness(0, 0, 8, 8);
-        exportReportBtn.Click += (_, _) => ExportOfflineReport();
-
-        Button exportDrillBtn = DarkTheme.CreateButton("生成离线双拼练习", compact: true);
-        exportDrillBtn.Margin = new Thickness(0, 0, 8, 8);
-        exportDrillBtn.Click += (_, _) => LaunchOfflineDrill(null);
-
-        toolsRow.Children.Add(installTaskBtn);
-        toolsRow.Children.Add(openDataBtn);
-        toolsRow.Children.Add(exportReportBtn);
-        toolsRow.Children.Add(exportDrillBtn);
-        sysStack.Children.Add(toolsRow);
-        sysStack.Children.Add(_settingsFeedbackText);
-
-        root.Children.Add(DarkTheme.CreateCard(sysStack));
+        root.Children.Add(DarkTheme.CreateCard(excStack));
         return root;
     }
 
@@ -987,30 +735,9 @@ internal sealed class MainWindow : Window
     {
         _todayRangeBtn.Click += async (_, _) => await SwitchRangeAsync(StatsRange.Today);
         _days7RangeBtn.Click += async (_, _) => await SwitchRangeAsync(StatsRange.Days7);
-        _allRangeBtn.Click += async (_, _) => await SwitchRangeAsync(StatsRange.All);
 
-        _modeSpBtn.Click += (_, _) => SwitchHeatmapMode(HeatmapDisplayMode.Shuangpin);
-        _modeEnBtn.Click += (_, _) => SwitchHeatmapMode(HeatmapDisplayMode.English);
-        _modeSymBtn.Click += (_, _) => SwitchHeatmapMode(HeatmapDisplayMode.Symbols);
-
-        _heatmap.KeySelected += (metric, letter) =>
-        {
-            _selectedWeakChar = letter;
-            if (letter is char ch)
-            {
-                string upper = char.ToUpperInvariant(ch).ToString();
-                _selectedKeyInfoText.Text = metric is not null
-                    ? string.Create(
-                        CultureInfo.InvariantCulture,
-                        $"已选中键位 {upper}：总击键 {metric.Presses:N0} · 确认纠错 {metric.Typos} ({metric.TypoRate * 100:0.0}%) · 中位 {metric.MedianIkiMs:0} ms")
-                    : $"已选中键位 {upper}：当前时间范围内暂无有效样本。";
-                _selectedKeyOfflineBtn.Visibility = Visibility.Visible;
-                _selectedKeyWebBtn.Visibility = Visibility.Visible;
-            }
-        };
-
-        _selectedKeyOfflineBtn.Click += (_, _) => LaunchOfflineDrill(_selectedWeakChar);
-        _selectedKeyWebBtn.Click += (_, _) => OpenWebRequested?.Invoke(_config.WebPracticeUrl);
+        _showSpLabelsCheck.Checked += (_, _) => _heatmap.ShowShuangpinLabels = true;
+        _showSpLabelsCheck.Unchecked += (_, _) => _heatmap.ShowShuangpinLabels = false;
 
         _hideLiveCheckOverview.Checked += (_, _) => OnHideLiveToggled(true);
         _hideLiveCheckOverview.Unchecked += (_, _) => OnHideLiveToggled(false);
@@ -1034,21 +761,6 @@ internal sealed class MainWindow : Window
 
         _captureTextCheck.Checked += (_, _) => OnCaptureTextToggled(true);
         _captureTextCheck.Unchecked += (_, _) => OnCaptureTextToggled(false);
-
-        _imeCombo.SelectionChanged += async (_, _) =>
-        {
-            if (_suppressSettingEvents || _imeCombo.SelectedIndex < 0 || _imeCombo.SelectedIndex >= ImeOptions.Length)
-            {
-                return;
-            }
-
-            string val = ImeOptions[_imeCombo.SelectedIndex].Value;
-            _config.ImeOverride = val == "auto" ? null : val;
-            SaveConfigAndNotify(_isViewerMode
-                ? "已写入输入法方案配置（新事件将随采集进程生效）。"
-                : "已切换输入法方案并向今日日志写入新的 meta 事件。");
-            await ReloadStatsAsync();
-        };
     }
 
     private async Task SwitchRangeAsync(StatsRange next)
@@ -1061,26 +773,7 @@ internal sealed class MainWindow : Window
         _range = next;
         DarkTheme.SetPillActive(_todayRangeBtn, next == StatsRange.Today);
         DarkTheme.SetPillActive(_days7RangeBtn, next == StatsRange.Days7);
-        DarkTheme.SetPillActive(_allRangeBtn, next == StatsRange.All);
         await ReloadStatsAsync();
-    }
-
-    private void SwitchHeatmapMode(HeatmapDisplayMode next)
-    {
-        if (_heatmapMode == next)
-        {
-            return;
-        }
-
-        _heatmapMode = next;
-        _heatmap.DisplayMode = next;
-        DarkTheme.SetPillActive(_modeSpBtn, next == HeatmapDisplayMode.Shuangpin);
-        DarkTheme.SetPillActive(_modeEnBtn, next == HeatmapDisplayMode.English);
-        DarkTheme.SetPillActive(_modeSymBtn, next == HeatmapDisplayMode.Symbols);
-        if (_snapshot is not null)
-        {
-            RebuildWeakCards(_snapshot);
-        }
     }
 
     private void OnHideLiveToggled(bool hide)
@@ -1096,12 +789,8 @@ internal sealed class MainWindow : Window
         _hideLiveCheckSettings.IsChecked = hide;
         _suppressSettingEvents = false;
 
-        SaveConfigAndNotify(hide ? "已开启隐私遮罩：隐藏实时流和明细里的明文。" : "已关闭隐私遮罩。");
+        SaveConfigAndNotify(hide ? "已开启隐私遮罩。" : "已关闭隐私遮罩。");
         RefreshLiveTick();
-        if (_snapshot is not null)
-        {
-            RebuildDetailsFeeds(_snapshot);
-        }
     }
 
     private void OnCaptureTextToggled(bool capture)
@@ -1113,8 +802,8 @@ internal sealed class MainWindow : Window
 
         _config.CaptureText = capture;
         SaveConfigAndNotify(_isViewerMode
-            ? "已保存文本采集开关配置；独立只读视图下将在下次后台加载配置时生效。"
-            : (capture ? "已开启 UIA 上屏文本采集。" : "已切为纯按键计数模式（停止读取上屏文本）。"));
+            ? "已保存配置（只读视图下重启后台服务后生效）。"
+            : (capture ? "已开启读取上屏文字。" : "已切换为仅记录物理按键。"));
     }
 
     private void AddCustomExclusion()
@@ -1136,7 +825,7 @@ internal sealed class MainWindow : Window
         else
         {
             _exclusionInput.Text = "";
-            SetSettingsFeedback($"进程 {name} 已在排除名单中。");
+            SetSettingsFeedback($"{name} 已在排除名单中。");
         }
     }
 
@@ -1150,7 +839,7 @@ internal sealed class MainWindow : Window
                 Text = "尚未添加自定义排除进程。",
                 FontSize = 12,
                 Foreground = DarkTheme.FaintBrush,
-                Margin = new Thickness(0, 4, 0, 0),
+                Margin = new Thickness(0, 2, 0, 0),
             });
             return;
         }
@@ -1158,8 +847,8 @@ internal sealed class MainWindow : Window
         foreach (string item in _config.ExtraExclusions)
         {
             string captured = item;
-            StackPanel chipContent = new() { Orientation = Orientation.Horizontal };
-            chipContent.Children.Add(new TextBlock
+            StackPanel chip = new() { Orientation = Orientation.Horizontal };
+            chip.Children.Add(new TextBlock
             {
                 Text = captured,
                 FontSize = 12,
@@ -1176,15 +865,15 @@ internal sealed class MainWindow : Window
                 BorderThickness = new Thickness(0),
                 Cursor = Cursors.Hand,
                 Margin = new Thickness(6, 0, 0, 0),
-                Padding = new Thickness(4, 0, 2, 0),
+                Padding = new Thickness(3, 0, 2, 0),
             };
             removeBtn.Click += (_, _) =>
             {
                 _config.ExtraExclusions.RemoveAll(s => string.Equals(s, captured, StringComparison.OrdinalIgnoreCase));
                 RebuildCustomExclusionChips();
-                SaveConfigAndNotify($"已移除自定义排除：{captured}");
+                SaveConfigAndNotify($"已移除排除进程：{captured}");
             };
-            chipContent.Children.Add(removeBtn);
+            chip.Children.Add(removeBtn);
 
             _customExclusionsPanel.Children.Add(new Border
             {
@@ -1193,8 +882,8 @@ internal sealed class MainWindow : Window
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(12),
                 Padding = new Thickness(10, 4, 8, 4),
-                Margin = new Thickness(0, 0, 8, 8),
-                Child = chipContent,
+                Margin = new Thickness(0, 0, 8, 6),
+                Child = chip,
             });
         }
     }
@@ -1226,13 +915,13 @@ internal sealed class MainWindow : Window
 
         if (_range == StatsRange.Today)
         {
-            _chartTitleText.Text = "今日分时段击键分布 (24 小时)";
+            _chartTitleText.Text = "今日分时段击键 (24 小时)";
             IReadOnlyList<HourlyPoint> hours = snap.HourlySeries;
             int maxKeys = Math.Max(1, hours.Max(h => h.Keystrokes));
             int peakHour = hours.OrderByDescending(h => h.Keystrokes).FirstOrDefault()?.Hour ?? 0;
             _chartMetaText.Text = snap.TodayKeystrokesFromDisk > 0
-                ? string.Create(CultureInfo.InvariantCulture, $"今日峰值时段 {peakHour:00}:00（{maxKeys:N0} 键）")
-                : "今日暂无击键数据";
+                ? string.Create(CultureInfo.InvariantCulture, $"峰值 {peakHour:00}:00（{maxKeys:N0} 键）")
+                : "今日暂无击键";
 
             for (int i = 0; i < hours.Count; i++)
             {
@@ -1250,17 +939,17 @@ internal sealed class MainWindow : Window
             return;
         }
 
-        _chartTitleText.Text = _range == StatsRange.Days7 ? "近 7 天每日击键趋势" : "每日击键趋势 (近 14 天)";
+        _chartTitleText.Text = "近 7 天每日击键";
         IReadOnlyList<DailyPoint> days = snap.DailySeries;
         if (days.Count == 0)
         {
             _chartMetaText.Text = "暂无每日统计";
-            _chartGrid.Children.Add(EmptyNotice("当前范围没有可展示的每日日志"));
+            _chartGrid.Children.Add(EmptyNotice("当前范围没有每日日志"));
             return;
         }
 
         int maxDayKeys = Math.Max(1, days.Max(d => d.Keystrokes));
-        _chartMetaText.Text = string.Create(CultureInfo.InvariantCulture, $"共 {days.Count} 天 · 单日最高 {maxDayKeys:N0} 键");
+        _chartMetaText.Text = string.Create(CultureInfo.InvariantCulture, $"{days.Count} 天 · 最高 {maxDayKeys:N0} 键/日");
 
         for (int i = 0; i < days.Count; i++)
         {
@@ -1278,11 +967,11 @@ internal sealed class MainWindow : Window
 
     private static FrameworkElement BuildBarColumn(int value, int max, bool hasTypos, string xLabel, string tooltip)
     {
-        Grid col = new() { Margin = new Thickness(3, 0, 3, 0), ToolTip = tooltip, Background = Brushes.Transparent };
+        Grid col = new() { Margin = new Thickness(2, 0, 2, 0), ToolTip = tooltip, Background = Brushes.Transparent };
         col.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         col.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
-        const double maxBarPx = 116.0;
+        const double maxBarPx = 98.0;
         double h = value <= 0 ? 3.0 : Math.Max(6.0, maxBarPx * value / max);
         Border bar = new()
         {
@@ -1292,7 +981,7 @@ internal sealed class MainWindow : Window
             Background = value <= 0
                 ? DarkTheme.ElevatedBrush
                 : (hasTypos ? DarkTheme.GreenBrush : DarkTheme.BlueBrush),
-            MaxWidth = 34,
+            MaxWidth = 32,
         };
         Grid.SetRow(bar, 0);
         col.Children.Add(bar);
@@ -1303,7 +992,7 @@ internal sealed class MainWindow : Window
             FontSize = 12,
             Foreground = DarkTheme.DimBrush,
             HorizontalAlignment = HorizontalAlignment.Center,
-            Margin = new Thickness(0, 6, 0, 0),
+            Margin = new Thickness(0, 5, 0, 0),
         };
         Grid.SetRow(label, 1);
         col.Children.Add(label);
@@ -1314,12 +1003,12 @@ internal sealed class MainWindow : Window
     private void SeedTelemetryFeedFromSnapshot(DesktopSnapshot snap)
     {
         List<LiveFeedItem> seeded = [];
-        foreach (DesktopCommitItem c in snap.RecentCommits.Take(12))
+        foreach (DesktopCommitItem c in snap.RecentCommits.Take(10))
         {
             seeded.Add(new LiveFeedItem(c.Ts, c.Exe, "commit", c.Text, c.Keys, null, null));
         }
 
-        foreach (TypoRecord t in snap.RecentTypos.Take(10))
+        foreach (TypoRecord t in snap.RecentTypos.Take(8))
         {
             string wrong = t.Deleted is char d ? d.ToString().ToUpperInvariant() : "?";
             string right = t.Replacement is char r ? r.ToString().ToUpperInvariant() : "?";
@@ -1335,19 +1024,19 @@ internal sealed class MainWindow : Window
         _liveFeedPanel.Children.Clear();
         if (live.Feed.Count == 0)
         {
-            _liveFeedPanel.Children.Add(EmptyNotice("等待击键与上屏事件... 在任意软件里打字，这里会实时滚出上屏文本和退格纠错。"));
+            _liveFeedPanel.Children.Add(EmptyNotice("等待输入... 在任意窗口打字，这里会实时滚出上屏与纠错。"));
             return;
         }
 
-        foreach (LiveFeedItem item in live.Feed.Take(18))
+        foreach (LiveFeedItem item in live.Feed.Take(15))
         {
             bool isCorrection = item.Kind == "correction";
             string timeText = DateTimeOffset.FromUnixTimeMilliseconds(item.Ts).ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture);
 
             Grid rowGrid = new();
-            rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(74) });
-            rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(140) });
-            rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(84) });
+            rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(68) });
+            rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(130) });
+            rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(80) });
             rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
             TextBlock timeEl = new()
@@ -1410,7 +1099,7 @@ internal sealed class MainWindow : Window
             {
                 Text = bodyText,
                 FontSize = 12.5,
-                Foreground = isCorrection ? DarkTheme.TextBrush : (_config.HideLiveText ? DarkTheme.FaintBrush : DarkTheme.TextBrush),
+                Foreground = _config.HideLiveText && !isCorrection ? DarkTheme.FaintBrush : DarkTheme.TextBrush,
                 TextTrimming = TextTrimming.CharacterEllipsis,
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(8, 0, 0, 0),
@@ -1426,110 +1115,40 @@ internal sealed class MainWindow : Window
             {
                 BorderBrush = DarkTheme.BorderBrush,
                 BorderThickness = new Thickness(0, 0, 0, 1),
-                Padding = new Thickness(4, 7, 4, 7),
+                Padding = new Thickness(2, 6, 2, 6),
                 Child = rowGrid,
             });
         }
     }
 
-    private void RebuildWeakCards(DesktopSnapshot snap)
+    private void RebuildWeakList(DesktopSnapshot snap)
     {
-        _weakCardsGrid.Children.Clear();
-
-        if (_heatmapMode == HeatmapDisplayMode.Symbols)
-        {
-            _weakSectionTitle.Text = "日常常用/易错编程符号统计 (Top 12)";
-            if (snap.WeakSymbols.Count == 0)
-            {
-                _weakCardsGrid.Columns = 1;
-                _weakCardsGrid.Children.Add(DarkTheme.CreateCard(EmptyNotice("当前范围暂无符号击键统计")));
-                return;
-            }
-
-            _weakCardsGrid.Columns = 3;
-            foreach (WeakSymbolMetric sym in snap.WeakSymbols)
-            {
-                StackPanel stack = new();
-                DockPanel top = new() { LastChildFill = false };
-                Border tile = new()
-                {
-                    Width = 36,
-                    Height = 36,
-                    Background = DarkTheme.ElevatedBrush,
-                    BorderBrush = DarkTheme.BorderStrongBrush,
-                    BorderThickness = new Thickness(1),
-                    CornerRadius = new CornerRadius(6),
-                    Child = new TextBlock
-                    {
-                        Text = sym.Char.ToString(),
-                        FontSize = 16,
-                        FontWeight = FontWeights.Bold,
-                        FontFamily = DarkTheme.MonoFont,
-                        Foreground = DarkTheme.TextBrush,
-                        HorizontalAlignment = HorizontalAlignment.Center,
-                        VerticalAlignment = VerticalAlignment.Center,
-                    },
-                };
-                StackPanel info = new() { Margin = new Thickness(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
-                info.Children.Add(new TextBlock
-                {
-                    Text = string.Create(CultureInfo.InvariantCulture, $"错率 {sym.TypoRate * 100:0.0}%"),
-                    FontSize = 12.5,
-                    FontWeight = FontWeights.SemiBold,
-                    Foreground = sym.Typos > 0 ? DarkTheme.RedBrush : DarkTheme.TextBrush,
-                });
-                info.Children.Add(new TextBlock
-                {
-                    Text = string.Create(CultureInfo.InvariantCulture, $"{sym.Typos} / {sym.Presses} 次"),
-                    FontSize = 12,
-                    Foreground = DarkTheme.DimBrush,
-                });
-
-                DockPanel.SetDock(tile, Dock.Left);
-                top.Children.Add(tile);
-                top.Children.Add(info);
-                stack.Children.Add(top);
-
-                Border card = DarkTheme.CreateCard(stack, new Thickness(12));
-                card.Margin = new Thickness(0, 0, 10, 10);
-                _weakCardsGrid.Children.Add(card);
-            }
-
-            return;
-        }
-
-        _weakSectionTitle.Text = "日常最容易错 / 最慢的键 (Top 12)";
+        _weakListPanel.Children.Clear();
         if (snap.WeakLetters.Count == 0)
         {
-            _weakCardsGrid.Columns = 1;
-            _weakCardsGrid.Children.Add(DarkTheme.CreateCard(EmptyNotice("当前范围还没有足够的错按样本，继续自然输入即可自动识别弱键。")));
+            _weakListPanel.Children.Add(EmptyNotice("当前范围还没有足够的错按样本"));
             return;
         }
 
-        _weakCardsGrid.Columns = 3;
-        foreach (KeyCellMetric key in snap.WeakLetters)
+        foreach (KeyCellMetric key in snap.WeakLetters.Take(6))
         {
-            char lower = char.ToLowerInvariant(key.Name[0]);
-            StackPanel cardStack = new();
-
-            // Row 1: Tile + Primary stats + Compact drill button
-            Grid topRow = new();
-            topRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            topRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            topRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            Grid row = new();
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
             Border tile = new()
             {
-                Width = 36,
-                Height = 36,
+                Width = 24,
+                Height = 24,
                 Background = DarkTheme.ElevatedBrush,
                 BorderBrush = DarkTheme.BorderStrongBrush,
                 BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(6),
+                CornerRadius = new CornerRadius(5),
                 Child = new TextBlock
                 {
                     Text = key.Name,
-                    FontSize = 16,
+                    FontSize = 12.5,
                     FontWeight = FontWeights.Bold,
                     Foreground = DarkTheme.TextBrush,
                     HorizontalAlignment = HorizontalAlignment.Center,
@@ -1538,332 +1157,129 @@ internal sealed class MainWindow : Window
             };
             Grid.SetColumn(tile, 0);
 
-            StackPanel primary = new() { Margin = new Thickness(10, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center };
-            primary.Children.Add(new TextBlock
+            TextBlock errInfo = new()
             {
-                Text = string.Create(CultureInfo.InvariantCulture, $"错率 {key.TypoRate * 100:0.0}%"),
+                Text = string.Create(CultureInfo.InvariantCulture, $"错率 {key.TypoRate * 100:0.0}%  ({key.Typos}/{key.Presses})"),
                 FontSize = 12.5,
-                FontWeight = FontWeights.SemiBold,
                 Foreground = DarkTheme.RedBrush,
-            });
-            primary.Children.Add(new TextBlock
-            {
-                Text = string.Create(CultureInfo.InvariantCulture, $"{key.Typos} / {key.Presses} 键"),
-                FontSize = 12,
-                Foreground = DarkTheme.DimBrush,
-            });
-            Grid.SetColumn(primary, 1);
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(10, 0, 8, 0),
+            };
+            Grid.SetColumn(errInfo, 1);
 
-            Button drillBtn = DarkTheme.CreateButton("离线练", primary: false, compact: true);
-            drillBtn.Click += (_, _) => LaunchOfflineDrill(lower);
-            Grid.SetColumn(drillBtn, 2);
-
-            topRow.Children.Add(tile);
-            topRow.Children.Add(primary);
-            topRow.Children.Add(drillBtn);
-            cardStack.Children.Add(topRow);
-
-            // Row 2: Median IKI & Equivalent WPM
-            DockPanel bottomRow = new() { LastChildFill = false, Margin = new Thickness(0, 10, 0, 0) };
-            TextBlock ikiText = new()
+            TextBlock speedInfo = new()
             {
                 Text = key.MedianIkiMs > 0
                     ? string.Create(CultureInfo.InvariantCulture, $"中位 {key.MedianIkiMs:0} ms")
                     : "中位 -- ms",
                 FontSize = 12,
                 Foreground = DarkTheme.DimBrush,
+                VerticalAlignment = VerticalAlignment.Center,
             };
-            TextBlock wpmText = new()
-            {
-                Text = key.Wpm > 0
-                    ? string.Create(CultureInfo.InvariantCulture, $"等效 {key.Wpm:0.0} wpm")
-                    : "等效 -- wpm",
-                FontSize = 12,
-                Foreground = DarkTheme.DimBrush,
-            };
-            DockPanel.SetDock(ikiText, Dock.Left);
-            DockPanel.SetDock(wpmText, Dock.Right);
-            bottomRow.Children.Add(ikiText);
-            bottomRow.Children.Add(wpmText);
-            cardStack.Children.Add(bottomRow);
+            Grid.SetColumn(speedInfo, 2);
 
-            Border card = DarkTheme.CreateCard(cardStack, new Thickness(12));
-            card.Margin = new Thickness(0, 0, 10, 10);
-            _weakCardsGrid.Children.Add(card);
+            row.Children.Add(tile);
+            row.Children.Add(errInfo);
+            row.Children.Add(speedInfo);
+
+            _weakListPanel.Children.Add(new Border
+            {
+                BorderBrush = DarkTheme.BorderBrush,
+                BorderThickness = new Thickness(0, 0, 0, 1),
+                Padding = new Thickness(2, 5, 2, 5),
+                ToolTip = string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"{key.Name} · 击键 {key.Presses:N0} · 纠错 {key.Typos:N0} ({key.TypoRate * 100:0.0}%)\n等效速度 {(key.Wpm > 0 ? $"{key.Wpm:0.0} wpm" : "--")}"),
+                Child = row,
+            });
         }
     }
 
-    private void RebuildAppsTable(DesktopSnapshot snap)
+    private void RebuildAppsList(DesktopSnapshot snap)
     {
-        _appsTablePanel.Children.Clear();
+        _appsListPanel.Children.Clear();
         if (snap.Apps.Count == 0)
         {
-            _appsTablePanel.Children.Add(EmptyNotice("当前范围暂无分应用统计"));
+            _appsListPanel.Children.Add(EmptyNotice("当前范围暂无应用记录"));
             return;
         }
 
-        _appsTablePanel.Children.Add(BuildAppTableRow("应用", "总击键", "上屏数", "退格错", "准确率", "文本读取", isHeader: true));
-
-        foreach (DesktopAppMetric app in snap.Apps.Take(12))
+        _appsListPanel.Children.Add(BuildAppRow("应用", "总击键", "准确率", isHeader: true, tooltip: null));
+        foreach (DesktopAppMetric app in snap.Apps.Take(6))
         {
-            _appsTablePanel.Children.Add(BuildAppTableRow(
+            string tip = string.Create(
+                CultureInfo.InvariantCulture,
+                $"{app.Exe}\n上屏 {app.Commits:N0} 条 · 确认纠错 {app.Typos:N0} 次\n文本读取：{(app.TextAvailable ? "可读取" : "盲区(仅计键)")}");
+            _appsListPanel.Children.Add(BuildAppRow(
                 app.Exe,
                 app.Keystrokes.ToString("N0", CultureInfo.InvariantCulture),
-                app.Commits.ToString("N0", CultureInfo.InvariantCulture),
-                app.Typos.ToString("N0", CultureInfo.InvariantCulture),
                 string.Create(CultureInfo.InvariantCulture, $"{app.AccuracyPct:0.0}%"),
-                app.TextAvailable ? "可读取" : "盲区(只计键)",
                 isHeader: false,
-                textAvailable: app.TextAvailable));
+                tooltip: tip));
         }
     }
 
-    private static FrameworkElement BuildAppTableRow(
-        string c1,
-        string c2,
-        string c3,
-        string c4,
-        string c5,
-        string c6,
-        bool isHeader,
-        bool textAvailable = true)
+    private static FrameworkElement BuildAppRow(string name, string keys, string acc, bool isHeader, string? tooltip)
     {
         Grid row = new();
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(2, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.2, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(82) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(68) });
 
         Brush fg = isHeader ? DarkTheme.DimBrush : DarkTheme.TextBrush;
         FontWeight fw = isHeader ? FontWeights.SemiBold : FontWeights.Normal;
 
-        TextBlock MakeCell(string text, int col, TextAlignment align, Brush? color = null)
+        TextBlock c1 = new()
         {
-            TextBlock tb = new()
-            {
-                Text = text,
-                FontSize = 12.5,
-                FontWeight = fw,
-                Foreground = color ?? fg,
-                TextAlignment = align,
-                TextTrimming = TextTrimming.CharacterEllipsis,
-                VerticalAlignment = VerticalAlignment.Center,
-            };
-            Grid.SetColumn(tb, col);
-            return tb;
-        }
+            Text = name,
+            FontSize = 12.5,
+            FontWeight = fw,
+            Foreground = fg,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(c1, 0);
 
-        row.Children.Add(MakeCell(c1, 0, TextAlignment.Left));
-        row.Children.Add(MakeCell(c2, 1, TextAlignment.Right));
-        row.Children.Add(MakeCell(c3, 2, TextAlignment.Right));
-        row.Children.Add(MakeCell(c4, 3, TextAlignment.Right));
-        row.Children.Add(MakeCell(c5, 4, TextAlignment.Right));
-        row.Children.Add(MakeCell(c6, 5, TextAlignment.Right, isHeader ? DarkTheme.DimBrush : (textAvailable ? DarkTheme.GreenBrush : DarkTheme.FaintBrush)));
+        TextBlock c2 = new()
+        {
+            Text = keys,
+            FontSize = 12.5,
+            FontWeight = fw,
+            Foreground = fg,
+            TextAlignment = TextAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(c2, 1);
 
-        return new Border
+        TextBlock c3 = new()
+        {
+            Text = acc,
+            FontSize = 12.5,
+            FontWeight = fw,
+            Foreground = fg,
+            TextAlignment = TextAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(c3, 2);
+
+        row.Children.Add(c1);
+        row.Children.Add(c2);
+        row.Children.Add(c3);
+
+        Border border = new()
         {
             BorderBrush = DarkTheme.BorderBrush,
             BorderThickness = new Thickness(0, 0, 0, 1),
-            Padding = new Thickness(6, isHeader ? 6 : 8, 6, isHeader ? 8 : 8),
+            Padding = new Thickness(2, isHeader ? 4 : 7, 2, isHeader ? 6 : 7),
+            Background = Brushes.Transparent,
             Child = row,
         };
-    }
-
-    private void RebuildDetailsFeeds(DesktopSnapshot snap)
-    {
-        _typosFeedPanel.Children.Clear();
-        if (snap.RecentTypos.Count == 0)
+        if (tooltip is not null)
         {
-            _typosFeedPanel.Children.Add(EmptyNotice("暂无真实纠错还原记录"));
-        }
-        else
-        {
-            foreach (TypoRecord t in snap.RecentTypos.Take(16))
-            {
-                string timeText = DateTimeOffset.FromUnixTimeMilliseconds(t.Ts).ToLocalTime().ToString("MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
-                string del = t.Deleted is char d ? d.ToString().ToUpperInvariant() : "?";
-                string rep = t.Replacement is char r ? r.ToString().ToUpperInvariant() : "?";
-                string causeLabel = t.Cause switch
-                {
-                    "pinyin" => "拼音层",
-                    "adjacent" => "相邻误按",
-                    _ => "句内纠错",
-                };
-
-                StackPanel item = new();
-                DockPanel head = new() { LastChildFill = false };
-                head.Children.Add(new TextBlock
-                {
-                    Text = $"{timeText} · {t.Exe}",
-                    FontSize = 12,
-                    Foreground = DarkTheme.DimBrush,
-                });
-                TextBlock badge = new()
-                {
-                    Text = causeLabel,
-                    FontSize = 12,
-                    Foreground = DarkTheme.BlueBrush,
-                };
-                DockPanel.SetDock(badge, Dock.Right);
-                head.Children.Add(badge);
-                item.Children.Add(head);
-
-                string ctx = _config.HideLiveText || string.IsNullOrWhiteSpace(t.Word)
-                    ? ""
-                    : $" · 「{t.Word}」";
-                item.Children.Add(new TextBlock
-                {
-                    Text = $"误按 {del} → 改按 {rep}{ctx}",
-                    FontSize = 12.5,
-                    Foreground = DarkTheme.TextBrush,
-                    TextWrapping = TextWrapping.Wrap,
-                    Margin = new Thickness(0, 3, 0, 0),
-                });
-
-                _typosFeedPanel.Children.Add(new Border
-                {
-                    BorderBrush = DarkTheme.BorderBrush,
-                    BorderThickness = new Thickness(0, 0, 0, 1),
-                    Padding = new Thickness(2, 8, 2, 8),
-                    Child = item,
-                });
-            }
+            border.ToolTip = tooltip;
         }
 
-        _commitsFeedPanel.Children.Clear();
-        if (snap.RecentCommits.Count == 0)
-        {
-            _commitsFeedPanel.Children.Add(EmptyNotice("暂无录到的上屏片段"));
-        }
-        else
-        {
-            foreach (DesktopCommitItem c in snap.RecentCommits.Take(16))
-            {
-                string timeText = DateTimeOffset.FromUnixTimeMilliseconds(c.Ts).ToLocalTime().ToString("MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
-                StackPanel item = new();
-                DockPanel head = new() { LastChildFill = false };
-                head.Children.Add(new TextBlock
-                {
-                    Text = $"{timeText} · {c.Exe}",
-                    FontSize = 12,
-                    Foreground = DarkTheme.DimBrush,
-                });
-                TextBlock keysLabel = new()
-                {
-                    Text = string.Create(CultureInfo.InvariantCulture, $"{c.Keys} 键"),
-                    FontSize = 12,
-                    Foreground = DarkTheme.DimBrush,
-                };
-                DockPanel.SetDock(keysLabel, Dock.Right);
-                head.Children.Add(keysLabel);
-                item.Children.Add(head);
-
-                string text = _config.HideLiveText
-                    ? string.Create(CultureInfo.InvariantCulture, $"[已隐藏明文 · {c.Text.Length} 字]")
-                    : FormatSingleLinePreview(c.Text);
-                item.Children.Add(new TextBlock
-                {
-                    Text = text,
-                    FontSize = 12.5,
-                    Foreground = _config.HideLiveText ? DarkTheme.FaintBrush : DarkTheme.TextBrush,
-                    TextWrapping = TextWrapping.Wrap,
-                    Margin = new Thickness(0, 3, 0, 0),
-                });
-
-                _commitsFeedPanel.Children.Add(new Border
-                {
-                    BorderBrush = DarkTheme.BorderBrush,
-                    BorderThickness = new Thickness(0, 0, 0, 1),
-                    Padding = new Thickness(2, 8, 2, 8),
-                    Child = item,
-                });
-            }
-        }
-    }
-
-    private void LaunchOfflineDrill(char? focusChar)
-    {
-        try
-        {
-            HashSet<char> weakSet = [];
-            if (focusChar is char ch && char.IsAsciiLetterLower(ch))
-            {
-                weakSet.Add(ch);
-            }
-            else if (_snapshot is not null)
-            {
-                foreach (KeyCellMetric metric in _snapshot.WeakLetters.Take(5))
-                {
-                    weakSet.Add(char.ToLowerInvariant(metric.Name[0]));
-                }
-            }
-
-            if (weakSet.Count == 0)
-            {
-                weakSet.UnionWith(['u', 'v', 'i', 'c', 'h']);
-            }
-
-            List<HanziEntry> picked = ZhSelector.Pick(weakSet, 60);
-            if (picked.Count == 0)
-            {
-                SetSettingsFeedback("内置汉字表为空，无法生成离线练习。", isError: true);
-                return;
-            }
-
-            string itemsJson = Program.BuildDrillItemsJson(picked);
-            string label = string.Join(", ", weakSet.Select(char.ToUpperInvariant));
-            string title = $"{picked.Count} 个字 · {label} 专项练习";
-            string outPath = System.IO.Path.Combine(_baseDir, "drill.html");
-            DrillPage.Write(outPath, itemsJson, title);
-
-            Process.Start(new ProcessStartInfo { FileName = outPath, UseShellExecute = true });
-            SetSettingsFeedback($"已生成并打开离线练习：{outPath}");
-        }
-        catch (Exception ex)
-        {
-            SetSettingsFeedback($"生成离线练习失败：{ex.Message}", isError: true);
-        }
-    }
-
-    private async void ExportOfflineReport()
-    {
-        try
-        {
-            DateOnly today = DateOnly.FromDateTime(DateTime.Now);
-            DateOnly? since = today.AddDays(-6);
-            string statsPath = System.IO.Path.Combine(_baseDir, "stats.json");
-            string reportPath = System.IO.Path.Combine(_baseDir, "report.html");
-
-            await Task.Run(() =>
-            {
-                (List<string> files, IEnumerable<EventRecord> stream, int rejected) = Analysis.EventLog.Read(_eventsDir, since, today);
-                List<EventRecord> events = [.. stream];
-                AttributorOptions opt = new();
-                AttributionResult r = new Attributor(opt).Run(events, rejected);
-                StatsContext ctx = new()
-                {
-                    Directory = _eventsDir,
-                    Files = files,
-                    Events = events.Count,
-                    From = since ?? today,
-                    To = today,
-                    PauseFactor = opt.PauseFactor,
-                    TypoMaxBackspaces = opt.TypoMaxBackspaces,
-                    MinKeySamples = opt.MinKeySamples,
-                };
-                StatsBuilder.WriteJson(statsPath, r, ctx);
-                Dashboard.Write(reportPath, File.ReadAllText(statsPath));
-            });
-
-            Process.Start(new ProcessStartInfo { FileName = reportPath, UseShellExecute = true });
-            SetSettingsFeedback($"已导出并打开离线报告：{reportPath}");
-        }
-        catch (Exception ex)
-        {
-            SetSettingsFeedback($"导出离线报告失败：{ex.Message}", isError: true);
-        }
+        return border;
     }
 
     private void RunInstallTaskScript()
@@ -1877,7 +1293,7 @@ internal sealed class MainWindow : Window
         string? script = candidates.FirstOrDefault(File.Exists);
         if (script is null)
         {
-            SetSettingsFeedback("找不到 scripts\\install-task.bat，请到源码仓库运行。", isError: true);
+            SetSettingsFeedback("找不到 scripts\\install-task.bat。", isError: true);
             return;
         }
 
@@ -1889,55 +1305,12 @@ internal sealed class MainWindow : Window
                 Verb = "runas",
                 UseShellExecute = true,
             });
-            SetSettingsFeedback("已调起 install-task.bat 安装/更新计划任务。");
+            SetSettingsFeedback("已调起安装/更新脚本，确认 UAC 后将升级后台托盘服务。");
         }
         catch (Exception ex)
         {
             SetSettingsFeedback($"启动脚本失败：{ex.Message}", isError: true);
         }
-    }
-
-    private async Task RefreshScheduledTaskStatusAsync()
-    {
-        string status = await Task.Run(() =>
-        {
-            try
-            {
-                ProcessStartInfo psi = new()
-                {
-                    FileName = "schtasks.exe",
-                    Arguments = "/Query /TN \"KeyTrace\" /FO LIST",
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                };
-                using Process? p = Process.Start(psi);
-                if (p is null)
-                {
-                    return "无法查询计划任务状态。";
-                }
-
-                string output = p.StandardOutput.ReadToEnd();
-                p.WaitForExit(3000);
-                if (p.ExitCode != 0)
-                {
-                    return "开机高权限计划任务 (KeyTrace)：未注册（可点击下方脚本按钮安装）。";
-                }
-
-                bool running = output.Contains("Running", StringComparison.OrdinalIgnoreCase)
-                    || output.Contains("正在运行", StringComparison.OrdinalIgnoreCase);
-                return running
-                    ? "开机高权限计划任务 (KeyTrace)：已注册，当前处于运行中。"
-                    : "开机高权限计划任务 (KeyTrace)：已注册（就绪状态）。";
-            }
-            catch (Exception ex)
-            {
-                return $"查询计划任务失败：{ex.Message}";
-            }
-        });
-
-        _taskStatusText.Text = status;
     }
 
     private static Border BuildKpiCard(object labelOrText, TextBlock valueBlock, TextBlock subBlock, Thickness margin)
@@ -1958,10 +1331,10 @@ internal sealed class MainWindow : Window
     private static TextBlock KpiValueText(string text) => new()
     {
         Text = text,
-        FontSize = 23,
+        FontSize = 22,
         FontWeight = FontWeights.SemiBold,
         Foreground = DarkTheme.TextBrush,
-        Margin = new Thickness(0, 4, 0, 3),
+        Margin = new Thickness(0, 3, 0, 2),
     };
 
     private static TextBlock KpiSubText(string text) => new()
@@ -1977,8 +1350,8 @@ internal sealed class MainWindow : Window
         StackPanel sp = new() { Orientation = Orientation.Horizontal, Margin = new Thickness(10, 0, 0, 0) };
         sp.Children.Add(new Border
         {
-            Width = 12,
-            Height = 10,
+            Width = 11,
+            Height = 9,
             Background = swatch,
             CornerRadius = new CornerRadius(2),
             VerticalAlignment = VerticalAlignment.Center,
@@ -2011,23 +1384,6 @@ internal sealed class MainWindow : Window
         }
 
         return string.Join(" · ", text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
-    }
-
-    private static string FormatImeLabel(string ime) => ime switch
-    {
-        "shuangpin/xiaohe" => "小鹤双拼",
-        "shuangpin/ziranma" => "自然码双拼",
-        "shuangpin/microsoft" => "微软双拼",
-        "shuangpin/sogou" => "搜狗双拼",
-        "full-pinyin" => "全拼",
-        _ => ime,
-    };
-
-    private static string FormatBytes(long bytes)
-    {
-        if (bytes < 1024) return string.Create(CultureInfo.InvariantCulture, $"{bytes} B");
-        if (bytes < 1024 * 1024) return string.Create(CultureInfo.InvariantCulture, $"{bytes / 1024.0:0.0} KB");
-        return string.Create(CultureInfo.InvariantCulture, $"{bytes / (1024.0 * 1024.0):0.00} MB");
     }
 
     private static Style CreateNavButtonStyle()

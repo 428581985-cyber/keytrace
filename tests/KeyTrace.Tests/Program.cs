@@ -3,6 +3,7 @@ using System.IO;
 using System.Linq;
 using KeyTrace.Analysis;
 using KeyTrace.Collect;
+using KeyTrace.Control;
 using KeyTrace.Ui;
 
 namespace KeyTrace.Tests;
@@ -38,6 +39,7 @@ internal static class Program
         ExclusionListTests();
         LiveTelemetryTests();
         DesktopStatsServiceTests();
+        ControlSignalsTests();
 
         Console.WriteLine();
         Console.WriteLine($"通过 {_passed}，失败 {_failed}");
@@ -797,6 +799,30 @@ internal static class Program
             True("分布到应用 msedge.exe", snap.Apps.Any(a => a.Exe == "msedge.exe"));
             True("24 小时数组长度正确", snap.HourlySeries.Count == 24 && snap.HourlySeries[10].Keystrokes > 0);
             True("最近纠错还原含 Q -> W", snap.RecentTypos.Any(r => r.Deleted == 'q' && r.Replacement == 'w'));
+        }
+        finally
+        {
+            if (Directory.Exists(dir))
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+        }
+    }
+
+    private static void ControlSignalsTests()
+    {
+        Section("ControlSignals");
+        string dir = Path.Combine(Path.GetTempPath(), "keytrace-sig-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(dir);
+        try
+        {
+            False("初始无唤醒文件", ControlSignals.ConsumeShowTrigger(dir));
+
+            string triggerPath = ControlSignals.ShowTriggerPath(dir);
+            File.WriteAllText(triggerPath, "123");
+            True("首次消费唤醒文件返回 true", ControlSignals.ConsumeShowTrigger(dir));
+            False("消费后唤醒文件被自动清除", File.Exists(triggerPath));
+            False("二次消费返回 false", ControlSignals.ConsumeShowTrigger(dir));
         }
         finally
         {

@@ -9,25 +9,17 @@ using KeyTrace.Analysis;
 
 namespace KeyTrace.Ui;
 
-internal enum HeatmapDisplayMode
-{
-    Shuangpin,
-    English,
-    Symbols,
-}
-
 /// <summary>
 /// 物理键盘热力图控件（ANSI 60%，5 行精确对齐）。
-/// 复用 <see cref="Dashboard"/> 的热力着色阶梯与物理比例，
-/// 支持小鹤双拼键帽标注、纯英文视图及编程符号视图。
+/// 支持一键开关小鹤双拼键帽标注，悬停查看完整按次、错率与中位 IKI。
 /// </summary>
 internal sealed class KeyboardHeatmapControl : UserControl
 {
     private readonly record struct KeyDef(string Label, int Vk, double WidthUnits);
 
-    private const double UnitWidth = 50;
-    private const double GapWidth = 6;
-    private const double KeyHeight = 50;
+    private const double UnitWidth = 48;
+    private const double GapWidth = 5;
+    private const double KeyHeight = 40;
 
     private static readonly KeyDef[][] Rows =
     [
@@ -93,15 +85,12 @@ internal sealed class KeyboardHeatmapControl : UserControl
 
     private readonly StackPanel _rowsPanel;
     private IReadOnlyDictionary<int, KeyCellMetric> _metrics = new Dictionary<int, KeyCellMetric>();
-    private HeatmapDisplayMode _mode = HeatmapDisplayMode.Shuangpin;
+    private bool _showShuangpinLabels = true;
     private int? _selectedVk;
 
     public KeyboardHeatmapControl()
     {
-        _rowsPanel = new StackPanel
-        {
-            Orientation = Orientation.Vertical,
-        };
+        _rowsPanel = new StackPanel { Orientation = Orientation.Vertical };
 
         Viewbox box = new()
         {
@@ -116,8 +105,8 @@ internal sealed class KeyboardHeatmapControl : UserControl
             Background = DarkTheme.PanelBrush,
             BorderBrush = DarkTheme.BorderBrush,
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(10),
-            Padding = new Thickness(18),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(12),
             Child = box,
         };
 
@@ -125,29 +114,17 @@ internal sealed class KeyboardHeatmapControl : UserControl
         Rebuild();
     }
 
-    public event Action<KeyCellMetric?, char?>? KeySelected;
-
-    public HeatmapDisplayMode DisplayMode
+    public bool ShowShuangpinLabels
     {
-        get => _mode;
+        get => _showShuangpinLabels;
         set
         {
-            if (_mode == value)
+            if (_showShuangpinLabels == value)
             {
                 return;
             }
 
-            _mode = value;
-            Rebuild();
-        }
-    }
-
-    public int? SelectedVk
-    {
-        get => _selectedVk;
-        set
-        {
-            _selectedVk = value;
+            _showShuangpinLabels = value;
             Rebuild();
         }
     }
@@ -179,21 +156,15 @@ internal sealed class KeyboardHeatmapControl : UserControl
 
                 bool isLetter = key.Vk is >= 65 and <= 90;
                 bool isSymbolOrDigit = KeyCatalog.Role(key.Vk) is KeyRole.Digit or KeyRole.Symbol;
-                bool dimmed = _mode == HeatmapDisplayMode.Symbols
-                    ? !isSymbolOrDigit && (metric is null || metric.Presses == 0)
-                    : !isLetter && !isSymbolOrDigit && metric is null;
-
+                bool dimmed = !isLetter && !isSymbolOrDigit && metric is null;
                 bool selected = _selectedVk == key.Vk;
-                Brush bg = dimmed || metric is null
-                    ? DarkTheme.HeatInactiveBrush
-                    : ToneOf(metric, _mode);
 
                 Border cap = new()
                 {
                     Width = width,
                     Height = KeyHeight,
                     Margin = new Thickness(0, 0, c == row.Length - 1 ? 0 : GapWidth, 0),
-                    Background = bg,
+                    Background = dimmed || metric is null ? DarkTheme.HeatInactiveBrush : ToneOf(metric),
                     BorderBrush = selected ? DarkTheme.BlueBrush : DarkTheme.BorderStrongBrush,
                     BorderThickness = new Thickness(selected ? 2 : 1),
                     CornerRadius = new CornerRadius(6),
@@ -206,20 +177,19 @@ internal sealed class KeyboardHeatmapControl : UserControl
                     HorizontalAlignment = HorizontalAlignment.Center,
                 };
 
-                TextBlock title = new()
+                inner.Children.Add(new TextBlock
                 {
                     Text = key.Label,
                     FontSize = key.Label.Length > 2 ? 12 : 13.5,
                     FontWeight = isLetter ? FontWeights.SemiBold : FontWeights.Normal,
                     Foreground = dimmed ? DarkTheme.FaintBrush : DarkTheme.TextBrush,
                     HorizontalAlignment = HorizontalAlignment.Center,
-                };
-                inner.Children.Add(title);
+                });
 
                 string? subText = BuildSubLabel(key, metric);
                 if (!string.IsNullOrEmpty(subText))
                 {
-                    TextBlock sub = new()
+                    inner.Children.Add(new TextBlock
                     {
                         Text = subText,
                         FontSize = 11,
@@ -227,12 +197,10 @@ internal sealed class KeyboardHeatmapControl : UserControl
                         Foreground = dimmed ? DarkTheme.FaintBrush : DarkTheme.DimBrush,
                         HorizontalAlignment = HorizontalAlignment.Center,
                         Margin = new Thickness(0, 1, 0, 0),
-                    };
-                    inner.Children.Add(sub);
+                    });
                 }
 
                 cap.Child = inner;
-
                 if (metric is not null)
                 {
                     cap.ToolTip = BuildTooltip(key, metric);
@@ -241,12 +209,10 @@ internal sealed class KeyboardHeatmapControl : UserControl
                 if (isLetter)
                 {
                     int capturedVk = key.Vk;
-                    char letter = char.ToLowerInvariant((char)key.Vk);
                     cap.MouseLeftButtonUp += (_, _) =>
                     {
-                        _selectedVk = capturedVk;
+                        _selectedVk = _selectedVk == capturedVk ? null : capturedVk;
                         Rebuild();
-                        KeySelected?.Invoke(metric, letter);
                     };
                 }
 
@@ -259,26 +225,16 @@ internal sealed class KeyboardHeatmapControl : UserControl
 
     private string? BuildSubLabel(KeyDef key, KeyCellMetric? metric)
     {
-        if (_mode == HeatmapDisplayMode.Shuangpin && XiaoheLabels.TryGetValue(key.Vk, out string? sp))
+        if (_showShuangpinLabels && XiaoheLabels.TryGetValue(key.Vk, out string? sp))
         {
             return sp;
         }
 
-        if (metric is not null && metric.Presses > 0)
+        if (metric is not null && metric.Presses > 0 && KeyCatalog.Role(key.Vk) == KeyRole.Letter)
         {
-            if (_mode == HeatmapDisplayMode.Symbols && KeyCatalog.Role(key.Vk) is KeyRole.Digit or KeyRole.Symbol)
-            {
-                return metric.Typos > 0
-                    ? string.Create(CultureInfo.InvariantCulture, $"{metric.TypoRate * 100:0.#}%")
-                    : string.Create(CultureInfo.InvariantCulture, $"{metric.Presses}");
-            }
-
-            if (KeyCatalog.Role(key.Vk) == KeyRole.Letter)
-            {
-                return metric.Typos > 0
-                    ? string.Create(CultureInfo.InvariantCulture, $"{metric.TypoRate * 100:0.#}%")
-                    : string.Create(CultureInfo.InvariantCulture, $"{metric.Presses}");
-            }
+            return metric.Typos > 0
+                ? string.Create(CultureInfo.InvariantCulture, $"{metric.TypoRate * 100:0.#}%")
+                : string.Create(CultureInfo.InvariantCulture, $"{metric.Presses}");
         }
 
         return null;
@@ -304,22 +260,14 @@ internal sealed class KeyboardHeatmapControl : UserControl
             + $"弱键分：{scoreText}");
     }
 
-    private static Brush ToneOf(KeyCellMetric metric, HeatmapDisplayMode mode)
+    private static Brush ToneOf(KeyCellMetric metric)
     {
-        if (mode == HeatmapDisplayMode.Symbols && metric.Role is not (KeyRole.Digit or KeyRole.Symbol))
-        {
-            return DarkTheme.HeatInactiveBrush;
-        }
-
         double? score = metric.WeakScore;
         if (score is null || score <= 0)
         {
-            if (metric.Typos > 0 && metric.Presses > 0)
-            {
-                return DarkTheme.HeatMildBrush;
-            }
-
-            return DarkTheme.HeatNoneBrush;
+            return metric.Typos > 0 && metric.Presses > 0
+                ? DarkTheme.HeatMildBrush
+                : DarkTheme.HeatNoneBrush;
         }
 
         if (score < 0.15) return DarkTheme.HeatMildBrush;

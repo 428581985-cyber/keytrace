@@ -34,8 +34,11 @@ internal sealed class RawInputCollector : IDisposable
     /// <summary>落盘与信号检查的间隔。见 WndProc 里 WM_TIMER 的注释。</summary>
     private const uint TickIntervalMs = 1_000;
     private const uint TickTimerId = 1;
+    private const uint ShowCheckIntervalMs = 300;
+    private const uint ShowCheckTimerId = 2;
 
     private readonly EventWriter _writer;
+    private readonly string _baseDirectory;
     private readonly SessionTracker _sessions = new();
     private readonly object _sessionGate = new();
     private readonly ForegroundTracker _foreground = new();
@@ -78,9 +81,11 @@ internal sealed class RawInputCollector : IDisposable
         bool captureText = true,
         bool traceText = false,
         EventWaitHandle? showSignal = null,
-        string? imeOverride = null)
+        string? imeOverride = null,
+        string? baseDirectory = null)
     {
         _writer = writer;
+        _baseDirectory = baseDirectory ?? UserConfig.BaseDirectoryFromEvents(writer.OutputDirectory);
         _stopSignal = stopSignal;
         _pauseSignal = pauseSignal;
         _showSignal = showSignal;
@@ -126,6 +131,7 @@ internal sealed class RawInputCollector : IDisposable
         CreateWindowHost();
         RegisterKeyboard();
         NativeMethods.SetTimer(_hwnd, new UIntPtr(TickTimerId), TickIntervalMs, IntPtr.Zero);
+        NativeMethods.SetTimer(_hwnd, new UIntPtr(ShowCheckTimerId), ShowCheckIntervalMs, IntPtr.Zero);
 
         _hotkeyRegistered = GlobalHotkey.Register(_hwnd);
         _running = true;
@@ -279,17 +285,33 @@ internal sealed class RawInputCollector : IDisposable
             // 那批数据永远等不到下一次按键，会整批丢掉。
             // 停止信号用轮询而不是 WaitOne 阻塞，是因为不能被阻塞在采集线程上。
             case NativeMethods.WM_TIMER:
+                if (wParam.ToInt64() == ShowCheckTimerId)
+                {
+                    bool signaled = false;
+                    if (_showSignal?.WaitOne(0) == true)
+                    {
+                        _showSignal.Reset();
+                        signaled = true;
+                    }
+
+                    if (ControlSignals.ConsumeShowTrigger(_baseDirectory))
+                    {
+                        signaled = true;
+                    }
+
+                    if (signaled)
+                    {
+                        ShowRequested?.Invoke();
+                    }
+
+                    return IntPtr.Zero;
+                }
+
                 _writer.Flush();
 
                 if (DateOnly.FromDateTime(DateTime.Now) != _metaDay)
                 {
                     WriteSessionMeta();
-                }
-
-                if (_showSignal?.WaitOne(0) == true)
-                {
-                    _showSignal.Reset();
-                    ShowRequested?.Invoke();
                 }
 
                 if (_stopSignal?.WaitOne(0) == true)
@@ -546,6 +568,7 @@ internal sealed class RawInputCollector : IDisposable
             }
 
             NativeMethods.KillTimer(_hwnd, new UIntPtr(TickTimerId));
+            NativeMethods.KillTimer(_hwnd, new UIntPtr(ShowCheckTimerId));
             NativeMethods.DestroyWindow(_hwnd);
             _hwnd = IntPtr.Zero;
         }

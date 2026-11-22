@@ -25,7 +25,7 @@ internal static class DesktopAppHost
         LiveTelemetry telemetry = new();
         collector.EventRecorded += telemetry.Observe;
 
-        TrayApplication tray = new(collector.DataDirectory, config.ShowMiniHud);
+        TrayApplication tray = new(config.ShowMiniHud);
         MainWindow? mainWindow = null;
         MiniHudWindow? miniHud = null;
         bool exiting = false;

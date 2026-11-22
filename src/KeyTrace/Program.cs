@@ -196,7 +196,8 @@ internal static class Program
             captureText: captureText,
             traceText: HasFlag(args, "--debug-text"),
             showSignal: show,
-            imeOverride: config.ImeOverride);
+            imeOverride: config.ImeOverride,
+            baseDirectory: baseDir);
 
         return DesktopAppHost.RunDaemon(
             collector,
@@ -214,7 +215,7 @@ internal static class Program
         UserConfig config = UserConfig.Load(baseDir);
 
         bool forceViewer = HasFlag(args, "--viewer");
-        if (!forceViewer && ControlSignals.SignalShow())
+        if (!forceViewer && ControlSignals.RequestShowViaFile(baseDir))
         {
             return 0;
         }
