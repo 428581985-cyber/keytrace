@@ -39,6 +39,12 @@ internal sealed record DesktopAppMetric(string Exe, int Keystrokes, int Commits,
 
 internal sealed record DesktopCommitItem(long Ts, string Exe, string Text, int Keys);
 
+internal sealed record TodayCountsSnapshot(
+    DateOnly Day,
+    long TotalKeystrokes,
+    long MaxEventTs,
+    int[] HourlyKeystrokes);
+
 internal sealed class DesktopSnapshot
 {
     public StatsRange Range { get; init; }
@@ -86,6 +92,45 @@ internal static class DesktopStatsService
         string? imeOverride,
         CancellationToken ct = default) =>
         Task.Run(() => LoadCore(eventsDir, range, imeOverride, ct), ct);
+
+    public static Task<TodayCountsSnapshot> LoadTodayCountsAsync(
+        string eventsDir,
+        CancellationToken ct = default) =>
+        Task.Run(() => LoadTodayCountsCore(eventsDir, ct), ct);
+
+    internal static TodayCountsSnapshot LoadTodayCountsCore(
+        string eventsDir,
+        CancellationToken ct = default)
+    {
+        DateOnly today = DateOnly.FromDateTime(DateTime.Now);
+        ct.ThrowIfCancellationRequested();
+
+        (_, IEnumerable<EventRecord> stream, _) = EventLog.Read(eventsDir, today, today);
+        long total = 0;
+        long maxTs = 0;
+        int[] hourly = new int[24];
+
+        foreach (EventRecord e in stream)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (e.Ev == "kd" && e.Sc != 0 && !KeyCatalog.IsModifier(e.Vk) && !e.HasCommandModifier)
+            {
+                DateTime localTime = DateTimeOffset.FromUnixTimeMilliseconds(e.Ts).ToLocalTime().DateTime;
+                if (DateOnly.FromDateTime(localTime) == today)
+                {
+                    total++;
+                    if (e.Ts > maxTs)
+                    {
+                        maxTs = e.Ts;
+                    }
+
+                    hourly[localTime.Hour]++;
+                }
+            }
+        }
+
+        return new TodayCountsSnapshot(today, total, maxTs, hourly);
+    }
 
     internal static DesktopSnapshot LoadCore(
         string eventsDir,

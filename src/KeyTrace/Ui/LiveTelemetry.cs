@@ -27,7 +27,8 @@ internal sealed record LiveTelemetrySnapshot(
     string? LastCorrectionCompact,
     long? LastCorrectionTs,
     string? CurrentIme,
-    IReadOnlyList<LiveFeedItem> Feed);
+    IReadOnlyList<LiveFeedItem> Feed,
+    IReadOnlyList<int> LiveHourlyDelta);
 
 /// <summary>
 /// 线程安全的实时打字遥测状态。
@@ -199,6 +200,15 @@ internal sealed class LiveTelemetry
 
             int liveWpm = ComputeLiveWpm(now);
             bool correctionFresh = _lastCorrectionTs is long cts && now - cts <= CorrectionHighlightMs;
+            int[] hourlyDelta = new int[24];
+            foreach (long keyTs in _liveKeyTimestamps)
+            {
+                DateTime localTime = DateTimeOffset.FromUnixTimeMilliseconds(keyTs).ToLocalTime().DateTime;
+                if (DateOnly.FromDateTime(localTime) == _currentDay)
+                {
+                    hourlyDelta[localTime.Hour]++;
+                }
+            }
 
             return new LiveTelemetrySnapshot(
                 TodayKeystrokes: _seededTodayBase + _liveKeyTimestamps.Count,
@@ -210,7 +220,8 @@ internal sealed class LiveTelemetry
                 LastCorrectionCompact: correctionFresh ? _lastCorrectionCompact : null,
                 LastCorrectionTs: correctionFresh ? _lastCorrectionTs : null,
                 CurrentIme: _currentIme,
-                Feed: [.. _feed]);
+                Feed: [.. _feed],
+                LiveHourlyDelta: hourlyDelta);
         }
     }
 

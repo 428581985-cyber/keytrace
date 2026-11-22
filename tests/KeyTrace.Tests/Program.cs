@@ -733,6 +733,27 @@ internal static class Program
         }
 
         Eq("心跳流严格截断在 80 条以内", "80", t.Snapshot(ts + 900).Feed.Count.ToString());
+
+        // 分时段增量桶统计与 SeedFromTodayCount 截断去重
+        LiveTelemetry hourly = new();
+        DateOnly localToday = DateOnly.FromDateTime(DateTime.Now);
+        long t10a = new DateTimeOffset(localToday.ToDateTime(new TimeOnly(10, 5))).ToUnixTimeMilliseconds();
+        long t10b = t10a + 200;
+        long t14 = new DateTimeOffset(localToday.ToDateTime(new TimeOnly(14, 15))).ToUnixTimeMilliseconds();
+        hourly.Observe(new KeyEvent { Ts = t10a, Ev = "kd", Vk = 'A', Sc = 30, Mods = 0, Exe = "code.exe", Sid = "s1" });
+        hourly.Observe(new KeyEvent { Ts = t10b, Ev = "kd", Vk = 'B', Sc = 48, Mods = 0, Exe = "code.exe", Sid = "s1" });
+        hourly.Observe(new KeyEvent { Ts = t14, Ev = "kd", Vk = 'C', Sc = 46, Mods = 0, Exe = "code.exe", Sid = "s1" });
+
+        LiveTelemetrySnapshot hBeforeSeed = hourly.Snapshot(t14 + 500);
+        Eq("LiveHourlyDelta 长度为 24", "24", hBeforeSeed.LiveHourlyDelta.Count.ToString());
+        Eq("10 点增量落入 10 时桶", "2", hBeforeSeed.LiveHourlyDelta[10].ToString());
+        Eq("14 点增量落入 14 时桶", "1", hBeforeSeed.LiveHourlyDelta[14].ToString());
+
+        hourly.SeedFromTodayCount(50, upToTs: t10b);
+        LiveTelemetrySnapshot hAfterSeed = hourly.Snapshot(t14 + 600);
+        Eq("Seed 截断后总计数不重复累计", "51", hAfterSeed.TodayKeystrokes.ToString());
+        Eq("Seed 截断点之前的 10 时增量清零", "0", hAfterSeed.LiveHourlyDelta[10].ToString());
+        Eq("Seed 截断点之后的 14 时增量保留", "1", hAfterSeed.LiveHourlyDelta[14].ToString());
     }
 
     private static void DesktopStatsServiceTests()
@@ -800,6 +821,11 @@ internal static class Program
             True("分布到应用 msedge.exe", snap.Apps.Any(a => a.Exe == "msedge.exe"));
             True("24 小时数组长度正确", snap.HourlySeries.Count == 24 && snap.HourlySeries[10].Keystrokes > 0);
             True("最近纠错还原含 Q -> W", snap.RecentTypos.Any(r => r.Deleted == 'q' && r.Replacement == 'w'));
+
+            TodayCountsSnapshot counts = DesktopStatsService.LoadTodayCountsCore(dir);
+            Eq("LoadTodayCountsCore 总数与 LoadCore 一致", snap.TodayKeystrokesFromDisk.ToString(), counts.TotalKeystrokes.ToString());
+            Eq("LoadTodayCountsCore 10 时桶一致", snap.HourlySeries[10].Keystrokes.ToString(), counts.HourlyKeystrokes[10].ToString());
+            Eq("LoadTodayCountsCore 其他时桶为 0", "0", counts.HourlyKeystrokes[15].ToString());
         }
         finally
         {

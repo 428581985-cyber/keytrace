@@ -40,19 +40,11 @@ internal static class DesktopAppHost
             }
         }
 
-        void ApplyConfigToCollector(UserConfig updated)
-        {
-            collector.Exclusions.SetExtra(updated.ExtraExclusions);
-            collector.SetCaptureText(updated.CaptureText);
-            collector.SetImeOverride(updated.ImeOverride);
-        }
-
         void SetMiniHudVisible(bool visible)
         {
             config.ShowMiniHud = visible;
             SaveConfigSafe(config, baseDir);
             tray.SetMiniHudVisible(visible);
-            mainWindow?.SetMiniHudChecked(visible);
 
             if (visible)
             {
@@ -82,21 +74,14 @@ internal static class DesktopAppHost
             {
                 mainWindow = new MainWindow(
                     collector.DataDirectory,
-                    baseDir,
-                    config,
                     telemetry,
                     isViewerMode: false,
                     isPausedInitial: collector.IsPaused);
 
                 mainWindow.TogglePauseRequested += collector.TogglePause;
-                mainWindow.MiniHudToggled += SetMiniHudVisible;
-                mainWindow.ConfigChanged += ApplyConfigToCollector;
-                mainWindow.OpenWebRequested += url => OpenUrl(url, tray.Notify);
-                mainWindow.DataDirectoryRequested += () => OpenFolder(collector.DataDirectory, tray.Notify);
             }
 
             mainWindow.SetPaused(collector.IsPaused);
-            mainWindow.SetMiniHudChecked(config.ShowMiniHud);
             mainWindow.BringToFront();
         }
 
@@ -193,8 +178,6 @@ internal static class DesktopAppHost
         MiniHudWindow? miniHud = null;
         MainWindow mainWindow = new(
             eventsDir,
-            baseDir,
-            config,
             telemetry,
             isViewerMode: true,
             isPausedInitial: false)
@@ -208,7 +191,6 @@ internal static class DesktopAppHost
         {
             config.ShowMiniHud = visible;
             SaveConfigSafe(config, baseDir);
-            mainWindow.SetMiniHudChecked(visible);
 
             if (visible)
             {
@@ -227,9 +209,6 @@ internal static class DesktopAppHost
             }
         }
 
-        mainWindow.MiniHudToggled += SetMiniHudVisible;
-        mainWindow.OpenWebRequested += url => OpenUrl(url, null);
-        mainWindow.DataDirectoryRequested += () => OpenFolder(eventsDir, null);
         mainWindow.Closed += (_, _) =>
         {
             hudTimer.Stop();
@@ -308,18 +287,6 @@ internal static class DesktopAppHost
         catch (Exception ex)
         {
             notify?.Invoke($"打不开页面：{ex.Message}");
-        }
-    }
-
-    private static void OpenFolder(string path, Action<string>? notify)
-    {
-        try
-        {
-            Process.Start(new ProcessStartInfo { FileName = "explorer.exe", Arguments = path, UseShellExecute = true });
-        }
-        catch (Exception ex)
-        {
-            notify?.Invoke($"打不开目录：{ex.Message}");
         }
     }
 }
