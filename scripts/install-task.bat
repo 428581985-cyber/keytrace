@@ -23,18 +23,21 @@ set "DEST=%LOCALAPPDATA%\KeyTrace"
 set "REPO=%USERPROFILE%\keytrace"
 
 echo.
-echo  KeyTrace - install logon task
-echo  -----------------------------
+echo  KeyTrace - install / update logon task
+echo  ----------------------------------------
 echo.
 
-if not exist "%DEST%\keytrace.exe" goto publish
-echo [1/3] already published: %DEST%
-goto stopold
+echo [1/3] stopping running instance (if any)
+if exist "%DEST%\keytrace.exe" (
+    "%DEST%\keytrace.exe" stop >nul 2>&1
+    timeout /t 2 /nobreak >nul
+)
+powershell -NoProfile -Command "Get-Process -Name keytrace -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue" >nul 2>&1
+timeout /t 1 /nobreak >nul
 
-:publish
-echo [1/3] publishing to %DEST%
-dotnet publish "%REPO%\src\KeyTrace" -c Release -o "%DEST%" >nul 2>&1
-if not exist "%DEST%\keytrace.exe" (
+echo [2/3] publishing latest build to %DEST%
+dotnet publish "%REPO%\src\KeyTrace" -c Release -o "%DEST%"
+if %errorlevel% neq 0 (
     echo.
     echo [ERROR] publish failed.
     echo   Check that the .NET SDK is installed: dotnet --list-sdks
@@ -43,14 +46,16 @@ if not exist "%DEST%\keytrace.exe" (
     pause
     exit /b 1
 )
+if not exist "%DEST%\keytrace.exe" (
+    echo.
+    echo [ERROR] keytrace.exe missing after publish.
+    echo.
+    pause
+    exit /b 1
+)
 
-:stopold
-echo [2/3] stopping running instance
-"%DEST%\keytrace.exe" stop >nul 2>&1
-timeout /t 3 /nobreak >nul
-
-echo [3/3] registering task
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$exe='%DEST%\keytrace.exe'; Unregister-ScheduledTask -TaskName 'KeyTrace' -Confirm:$false -ErrorAction SilentlyContinue; $a=New-ScheduledTaskAction -Execute $exe -Argument 'run'; $t=New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME; $s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1); $p=New-ScheduledTaskPrincipal -UserId ('{0}\{1}' -f $env:USERDOMAIN,$env:USERNAME) -LogonType Interactive -RunLevel Highest; Register-ScheduledTask -TaskName 'KeyTrace' -Action $a -Trigger $t -Settings $s -Principal $p -Force | Out-Null; if(-not (Get-ScheduledTask -TaskName 'KeyTrace' -ErrorAction SilentlyContinue)){ Write-Host '[ERROR] registration failed'; exit 1 }; Write-Host '[OK] task registered'; Write-Host '  exe       : ' $exe; Write-Host '  trigger   : at logon'; Write-Host '  run level : highest'; Write-Host '  time limit: none'; Start-ScheduledTask -TaskName 'KeyTrace'; Start-Sleep -Seconds 4; if(Get-Process -Name keytrace -ErrorAction SilentlyContinue){ Write-Host '[OK] running - green dot in the tray' } else { Write-Host '[WARN] not running - check Task Scheduler' }"
+echo [3/3] registering and starting logon task
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$exe='%DEST%\keytrace.exe'; Unregister-ScheduledTask -TaskName 'KeyTrace' -Confirm:$false -ErrorAction SilentlyContinue; $a=New-ScheduledTaskAction -Execute $exe -Argument 'run'; $t=New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME; $s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1); $p=New-ScheduledTaskPrincipal -UserId ('{0}\{1}' -f $env:USERDOMAIN,$env:USERNAME) -LogonType Interactive -RunLevel Highest; Register-ScheduledTask -TaskName 'KeyTrace' -Action $a -Trigger $t -Settings $s -Principal $p -Force | Out-Null; if(-not (Get-ScheduledTask -TaskName 'KeyTrace' -ErrorAction SilentlyContinue)){ Write-Host '[ERROR] registration failed'; exit 1 }; Write-Host '[OK] task registered'; Write-Host '  exe       : ' $exe; Write-Host '  trigger   : at logon'; Write-Host '  run level : highest'; Write-Host '  time limit: none'; Start-ScheduledTask -TaskName 'KeyTrace'; Start-Sleep -Seconds 3; if(Get-Process -Name keytrace -ErrorAction SilentlyContinue){ Write-Host '[OK] running - green dot in the tray' } else { Write-Host '[WARN] not running - check Task Scheduler' }"
 
 echo.
 echo To remove the task later, run as administrator:
