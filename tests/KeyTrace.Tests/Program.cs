@@ -40,6 +40,7 @@ internal static class Program
         LiveTelemetryTests();
         DesktopStatsServiceTests();
         ControlSignalsTests();
+        AppIconsTests();
 
         Console.WriteLine();
         Console.WriteLine($"通过 {_passed}，失败 {_failed}");
@@ -831,6 +832,23 @@ internal static class Program
                 Directory.Delete(dir, recursive: true);
             }
         }
+    }
+
+    private static void AppIconsTests()
+    {
+        Section("AppIcons");
+        string[] names = typeof(AppIcons).Assembly.GetManifestResourceNames();
+        True("嵌入录制中 .ico 资源存在", names.Contains(AppIcons.ActiveResourceName));
+        True("嵌入暂停态 .ico 资源存在", names.Contains(AppIcons.PausedResourceName));
+
+        using System.Drawing.Icon activeTray = AppIcons.LoadTrayIcon(paused: false);
+        using System.Drawing.Icon pausedTray = AppIcons.LoadTrayIcon(paused: true);
+        True($"录制态托盘图标尺寸有效 ({activeTray.Width}x{activeTray.Height})", activeTray.Width >= 16 && activeTray.Height >= 16);
+        True($"暂停态托盘图标尺寸有效 ({pausedTray.Width}x{pausedTray.Height})", pausedTray.Width >= 16 && pausedTray.Height >= 16);
+
+        System.Windows.Media.ImageSource? winIcon = AppIcons.LoadWindowIcon(paused: false);
+        System.Windows.Media.Imaging.BitmapSource? bmp = winIcon as System.Windows.Media.Imaging.BitmapSource;
+        True($"窗口图标选用高分辨率帧 ({bmp?.PixelWidth}px)", bmp is not null && bmp.PixelWidth >= 128);
     }
 
     private static TypoRecord Rec(string kind, long ts) => new()

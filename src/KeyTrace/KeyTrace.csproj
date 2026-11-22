@@ -12,6 +12,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <Version>0.0.1</Version>
+    <ApplicationIcon>..\..\assets\keytrace.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
@@ -27,6 +28,9 @@
     <!-- 中文练习材料要用的字表（7258 字：音节 + 词频 + 小鹤双拼码）。
          编进程序集而不是放旁边当文件：publish 成单文件时不用管路径。 -->
     <EmbeddedResource Include="..\..\data\zh-hanzi.tsv" LogicalName="KeyTrace.data.zh-hanzi.tsv" />
+    <!-- 托盘与桌面窗口使用的多分辨率图标（录制中 / 已暂停）。 -->
+    <EmbeddedResource Include="..\..\assets\keytrace.ico" LogicalName="KeyTrace.assets.keytrace.ico" />
+    <EmbeddedResource Include="..\..\assets\keytrace-paused.ico" LogicalName="KeyTrace.assets.keytrace-paused.ico" />
   </ItemGroup>
 
 </Project>

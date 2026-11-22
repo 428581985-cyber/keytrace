@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="faceGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#343D4C" />
+      <stop offset="100%" stop-color="#222933" />
+    </linearGradient>
+    <linearGradient id="pulseGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#5EE08A" />
+      <stop offset="100%" stop-color="#4EA8DE" />
+    </linearGradient>
+  </defs>
+
+  <!-- Keycap base -->
+  <rect x="14" y="14" width="228" height="228" rx="54" fill="#1A1F27" stroke="#4E5A6C" stroke-width="8" />
+
+  <!-- Keycap top surface -->
+  <rect x="32" y="24" width="192" height="176" rx="34" fill="url(#faceGrad)" stroke="#566478" stroke-opacity="0.45" stroke-width="3" />
+
+  <!-- Trace pulse wave -->
+  <path d="M 58 114 L 84 114 L 106 70 L 134 156 L 158 106 L 174 114 L 198 114"
+        fill="none"
+        stroke="url(#pulseGrad)"
+        stroke-width="20"
+        stroke-linecap="round"
+        stroke-linejoin="round" />
+
+  <!-- Active recording status dot -->
+  <circle cx="206" cy="206" r="34" fill="#4ADE80" stroke="#1A1F27" stroke-width="10" />
+</svg>

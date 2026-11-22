@@ -105,6 +105,11 @@ internal sealed class MainWindow : Window
         MinHeight = 540;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
 
+        if (AppIcons.LoadWindowIcon() is ImageSource appIcon)
+        {
+            Icon = appIcon;
+        }
+
         DarkTheme.ApplyDarkTitleBar(this);
         DarkTheme.ApplyWindowResources(this);
 
@@ -282,6 +287,21 @@ internal sealed class MainWindow : Window
             WindowState = WindowState.Normal;
         }
 
+        ForceForeground();
+
+        // Win11 托盘折叠面板在鼠标释放后大约 50ms 异步收起，容易把前景焦点抢走；
+        // 等消息队列空闲后再补一次前景激活，确保窗口稳定置顶可见。
+        _ = Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, () =>
+        {
+            if (IsVisible && !IsActive)
+            {
+                ForceForeground();
+            }
+        });
+    }
+
+    private void ForceForeground()
+    {
         Activate();
         Topmost = true;
         Topmost = false;
@@ -290,6 +310,7 @@ internal sealed class MainWindow : Window
         IntPtr hwnd = new WindowInteropHelper(this).Handle;
         if (hwnd != IntPtr.Zero)
         {
+            _ = NativeMethods.BringWindowToTop(hwnd);
             _ = NativeMethods.SetForegroundWindow(hwnd);
         }
     }
@@ -459,13 +480,30 @@ internal sealed class MainWindow : Window
         DockPanel layout = new() { LastChildFill = true };
 
         StackPanel top = new() { Margin = new Thickness(16, 18, 14, 14) };
-        top.Children.Add(new TextBlock
+        StackPanel brandRow = new() { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        if (AppIcons.LoadWindowIcon() is ImageSource brandIcon)
+        {
+            Image logoImg = new()
+            {
+                Source = brandIcon,
+                Width = 22,
+                Height = 22,
+                Margin = new Thickness(0, 0, 8, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            RenderOptions.SetBitmapScalingMode(logoImg, BitmapScalingMode.HighQuality);
+            brandRow.Children.Add(logoImg);
+        }
+
+        brandRow.Children.Add(new TextBlock
         {
             Text = "KeyTrace",
             FontSize = 18,
             FontWeight = FontWeights.SemiBold,
             Foreground = DarkTheme.TextBrush,
+            VerticalAlignment = VerticalAlignment.Center,
         });
+        top.Children.Add(brandRow);
 
         StackPanel statusRow = new() { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 7, 0, 0) };
         statusRow.Children.Add(_sideStatusDot);

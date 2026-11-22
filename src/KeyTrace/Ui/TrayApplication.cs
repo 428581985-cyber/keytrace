@@ -6,7 +6,7 @@ namespace KeyTrace.Ui;
 
 /// <summary>
 /// 托盘图标控制器（纯 NotifyIcon，消息循环交给 WPF Application）。
-/// 图标颜色实时指示采集状态：绿 = 录制中，灰 = 已暂停；左键单击/双击直接打开主窗口。
+/// 使用内嵌多分辨率 .ico 图标区分状态：绿点脉冲 = 录制中，灰杠暂停 = 已暂停；左键单击/双击直接打开主窗口。
 /// </summary>
 internal sealed class TrayApplication : IDisposable
 {
@@ -24,8 +24,8 @@ internal sealed class TrayApplication : IDisposable
 
     public TrayApplication(bool miniHudChecked)
     {
-        _recordingIcon = CreateDotIcon(Color.FromArgb(76, 175, 80));
-        _pausedIcon = CreateDotIcon(Color.FromArgb(140, 140, 140));
+        _recordingIcon = AppIcons.LoadTrayIcon(paused: false);
+        _pausedIcon = AppIcons.LoadTrayIcon(paused: true);
 
         _statusItem = new ToolStripMenuItem($"{AppName} · 录制中 (0 事件)") { Enabled = false };
 
@@ -126,20 +126,5 @@ internal sealed class TrayApplication : IDisposable
             ? $"{AppName} · {state} ({_eventCount} 事件)"
             : $"{AppName} · {state}";
         _tray.Text = tip.Length > 63 ? tip[..63] : tip;
-    }
-
-    /// <summary>临时画一个圆点当图标，省掉一个二进制 .ico 资源——源码里能看懂的都留在源码里。</summary>
-    private static Icon CreateDotIcon(Color color)
-    {
-        using Bitmap bitmap = new(16, 16);
-        using (Graphics graphics = Graphics.FromImage(bitmap))
-        {
-            graphics.Clear(Color.Transparent);
-            using SolidBrush brush = new(color);
-            graphics.FillEllipse(brush, 2, 2, 12, 12);
-        }
-
-        IntPtr handle = bitmap.GetHicon();
-        return Icon.FromHandle(handle);
     }
 }
