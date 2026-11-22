@@ -1,27 +1,21 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <defs>
-    <linearGradient id="faceGradPaused" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#2C323C" />
-      <stop offset="100%" stop-color="#1E232B" />
+    <linearGradient id="bgPaused" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#64748B" />
+      <stop offset="100%" stop-color="#3F4756" />
     </linearGradient>
   </defs>
 
-  <!-- Keycap base -->
-  <rect x="14" y="14" width="228" height="228" rx="54" fill="#1A1F27" stroke="#4E5A6C" stroke-width="8" />
+  <!-- Modern minimalist squircle base (muted slate when paused) -->
+  <rect x="16" y="16" width="224" height="224" rx="54" fill="url(#bgPaused)" />
+  <rect x="17" y="17" width="222" height="222" rx="53" fill="none" stroke="#FFFFFF" stroke-opacity="0.14" stroke-width="2" />
 
-  <!-- Keycap top surface (dimmed when paused) -->
-  <rect x="32" y="24" width="192" height="176" rx="34" fill="url(#faceGradPaused)" stroke="#566478" stroke-opacity="0.32" stroke-width="3" />
-
-  <!-- Trace pulse wave (desaturated slate) -->
-  <path d="M 58 114 L 84 114 L 106 70 L 134 156 L 158 106 L 174 114 L 198 114"
+  <!-- Negative-space geometric K mark -->
+  <rect x="66" y="66" width="26" height="124" rx="13" fill="#E2E8F0" />
+  <path d="M 178 79 L 122 128 L 178 177"
         fill="none"
-        stroke="#8C95A2"
-        stroke-width="20"
+        stroke="#E2E8F0"
+        stroke-width="26"
         stroke-linecap="round"
         stroke-linejoin="round" />
-
-  <!-- Paused status badge -->
-  <circle cx="206" cy="206" r="34" fill="#6E7784" stroke="#1A1F27" stroke-width="10" />
-  <rect x="193" y="190" width="9" height="32" rx="4" fill="#1A1F27" />
-  <rect x="210" y="190" width="9" height="32" rx="4" fill="#1A1F27" />
 </svg>

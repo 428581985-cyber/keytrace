@@ -6,7 +6,7 @@ namespace KeyTrace.Ui;
 
 /// <summary>
 /// 托盘图标控制器（纯 NotifyIcon，消息循环交给 WPF Application）。
-/// 使用内嵌多分辨率 .ico 图标区分状态：绿点脉冲 = 录制中，灰杠暂停 = 已暂停；左键单击/双击直接打开主窗口。
+/// 使用内嵌多分辨率 .ico 图标区分状态：翠绿图标 = 录制中，灰阶图标 = 已暂停；左键单击/双击直接打开主窗口。
 /// </summary>
 internal sealed class TrayApplication : IDisposable
 {
