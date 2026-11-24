@@ -41,6 +41,7 @@ internal static class Program
         DesktopStatsServiceTests();
         ControlSignalsTests();
         AppIconsTests();
+        ImeConfigTests();
 
         Console.WriteLine();
         Console.WriteLine($"通过 {_passed}，失败 {_failed}");
@@ -875,6 +876,30 @@ internal static class Program
         System.Windows.Media.ImageSource? winIcon = AppIcons.LoadWindowIcon(paused: false);
         System.Windows.Media.Imaging.BitmapSource? bmp = winIcon as System.Windows.Media.Imaging.BitmapSource;
         True($"窗口图标选用高分辨率帧 ({bmp?.PixelWidth}px)", bmp is not null && bmp.PixelWidth >= 128);
+    }
+
+    private static void ImeConfigTests()
+    {
+        Section("ImeConfig");
+        Eq("关闭双拼返回 full-pinyin", "full-pinyin", ImeConfig.DescribeFromValues(false, 0, _ => "小鹤双拼*2"));
+        Eq("内置 0 -> 微软双拼", "shuangpin/microsoft", ImeConfig.DescribeFromValues(true, 0, _ => null));
+        Eq("内置 1 -> 智能ABC", "shuangpin/abc", ImeConfig.DescribeFromValues(true, 1, _ => null));
+        Eq("内置 2 -> 紫光双拼", "shuangpin/ziguang", ImeConfig.DescribeFromValues(true, 2, _ => null));
+        Eq("内置 3 -> 自然码", "shuangpin/ziranma", ImeConfig.DescribeFromValues(true, 3, _ => null));
+        Eq("内置 4 -> 中文之星", "shuangpin/chinese-star", ImeConfig.DescribeFromValues(true, 4, _ => null));
+        Eq("内置 5 -> 大牛", "shuangpin/daniu", ImeConfig.DescribeFromValues(true, 5, _ => null));
+        Eq("切换回内置微软时不误报残留自定义槽 0", "shuangpin/microsoft",
+            ImeConfig.DescribeFromValues(true, 0, slot => slot == 0 ? "小鹤双拼*2*^*iuvdjhcwfg" : null));
+        Eq("自定义槽 10 小鹤", "shuangpin/xiaohe",
+            ImeConfig.DescribeFromValues(true, 10, slot => slot == 0 ? "小鹤双拼*2*^*iuvdjhcwfg" : null));
+        Eq("自定义槽 11 搜狗", "shuangpin/sogou",
+            ImeConfig.DescribeFromValues(true, 11, slot => slot == 1 ? "搜狗双拼" : null));
+        Eq("自定义槽 10 自然码", "shuangpin/ziranma",
+            ImeConfig.DescribeFromValues(true, 10, slot => slot == 0 ? "Ziranma" : null));
+        Eq("未知自定义名称保留槽号", "shuangpin/custom-2",
+            ImeConfig.DescribeFromValues(true, 12, slot => slot == 2 ? "MyLayout" : null));
+        Eq("无 scheme 键时回退检查自定义槽或微软双拼", "shuangpin/microsoft",
+            ImeConfig.DescribeFromValues(true, null, _ => null));
     }
 
     private static TypoRecord Rec(string kind, long ts) => new()
