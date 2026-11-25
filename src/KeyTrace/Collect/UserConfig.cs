@@ -14,6 +14,7 @@ internal sealed class UserConfig
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
+        PropertyNameCaseInsensitive = true,
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
 
@@ -24,7 +25,9 @@ internal sealed class UserConfig
     public bool CaptureText { get; set; } = true;
     public string? ImeOverride { get; set; }
     public List<string> ExtraExclusions { get; set; } = [];
-    public string WebPracticeUrl { get; set; } = "http://localhost:3000/";
+    public string? WebPracticeUrl { get; set; }
+
+    internal bool HasWebPracticeUrl => !string.IsNullOrWhiteSpace(WebPracticeUrl);
 
     public static string FilePath(string baseDirectory) => Path.Combine(baseDirectory, "config.json");
 
@@ -94,7 +97,11 @@ internal sealed class UserConfig
 
         if (string.IsNullOrWhiteSpace(WebPracticeUrl))
         {
-            WebPracticeUrl = "http://localhost:3000/";
+            WebPracticeUrl = null;
+        }
+        else
+        {
+            WebPracticeUrl = WebPracticeUrl.Trim();
         }
 
         if (MiniHudLeft is double left && (double.IsNaN(left) || double.IsInfinity(left)))

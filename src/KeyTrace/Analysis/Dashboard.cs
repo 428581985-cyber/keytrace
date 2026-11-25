@@ -1,7 +1,17 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Text;
 
 namespace KeyTrace.Analysis;
+
+internal sealed record DashboardGenerationResult(
+    bool Success,
+    string? ReportPath,
+    int EventCount,
+    bool UsedAllHistory,
+    string? ErrorMessage);
 
 /// <summary>
 /// 生成单文件看板：数据内嵌、样式内联、不联网、不发请求。
@@ -11,13 +21,127 @@ namespace KeyTrace.Analysis;
 /// </summary>
 internal static class Dashboard
 {
+    public const int DefaultLookbackDays = 7;
+
+    public static string ReportFilePath(string baseDirectory) => Path.Combine(baseDirectory, "report.html");
+
     public static void Write(string outputPath, string statsJson)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath))!);
-        File.WriteAllText(outputPath, Build(statsJson), new UTF8Encoding(false));
+        string fullPath = Path.GetFullPath(outputPath);
+        string dir = Path.GetDirectoryName(fullPath)!;
+        Directory.CreateDirectory(dir);
+
+        string tmp = Path.Combine(dir, $"report.{Environment.ProcessId}.{Environment.CurrentManagedThreadId}.tmp");
+        try
+        {
+            File.WriteAllText(tmp, Build(statsJson), new UTF8Encoding(false));
+            File.Move(tmp, fullPath, overwrite: true);
+        }
+        catch
+        {
+            try
+            {
+                if (File.Exists(tmp))
+                {
+                    File.Delete(tmp);
+                }
+            }
+            catch
+            {
+                // 清理临时文件失败不应掩盖原始异常
+            }
+
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// 直接从本地事件目录归因并生成离线 HTML 统计看板，供托盘/桌面端一键打开。
+    /// 默认汇总近 7 天；若近 7 天为空则自动回退全部历史；完全无事件时仍生成合法空看板，永不崩溃。
+    /// </summary>
+    public static DashboardGenerationResult GenerateFromEvents(
+        string eventsDirectory,
+        string baseDirectory,
+        int days = DefaultLookbackDays,
+        DateOnly? todayOverride = null)
+    {
+        try
+        {
+            DateOnly today = todayOverride ?? DateOnly.FromDateTime(DateTime.Now);
+            DateOnly? since = days > 0 ? today.AddDays(1 - days) : null;
+            bool usedAllHistory = since is null;
+
+            (List<string> files, IEnumerable<EventRecord> stream, int rejected) = EventLog.Read(eventsDirectory, since, today);
+            List<EventRecord> events = [.. stream];
+
+            if (events.Count == 0 && since is not null)
+            {
+                (files, stream, rejected) = EventLog.Read(eventsDirectory, since: null, today);
+                events = [.. stream];
+                usedAllHistory = events.Count > 0;
+            }
+
+            AttributorOptions options = new();
+            AttributionResult attribution = new Attributor(options).Run(events, rejected);
+            DateOnly from = usedAllHistory
+                ? (EarliestFileDate(files) ?? today)
+                : (events.Count > 0 ? (since ?? EarliestFileDate(files) ?? today) : today);
+
+            StatsContext context = new()
+            {
+                Directory = eventsDirectory,
+                Files = files,
+                Events = events.Count,
+                From = from,
+                To = today,
+                PauseFactor = options.PauseFactor,
+                TypoMaxBackspaces = options.TypoMaxBackspaces,
+                MinKeySamples = options.MinKeySamples,
+            };
+
+            string statsJson = StatsBuilder.BuildJson(attribution, context);
+            string reportPath = ReportFilePath(baseDirectory);
+            Write(reportPath, statsJson);
+
+            return new DashboardGenerationResult(
+                Success: true,
+                ReportPath: reportPath,
+                EventCount: events.Count,
+                UsedAllHistory: usedAllHistory,
+                ErrorMessage: null);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return new DashboardGenerationResult(
+                Success: false,
+                ReportPath: null,
+                EventCount: 0,
+                UsedAllHistory: false,
+                ErrorMessage: ex.Message);
+        }
     }
 
     internal static string Build(string statsJson) => Template.Replace("/*__DATA__*/", statsJson, StringComparison.Ordinal);
+
+    private static DateOnly? EarliestFileDate(List<string> files)
+    {
+        DateOnly? earliest = null;
+        foreach (string path in files)
+        {
+            string name = Path.GetFileName(path);
+            string stem = name.EndsWith(".gz", StringComparison.OrdinalIgnoreCase)
+                ? Path.GetFileNameWithoutExtension(Path.GetFileNameWithoutExtension(name))
+                : Path.GetFileNameWithoutExtension(name);
+
+            if (DateOnly.TryParseExact(stem, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateOnly day)
+                && (earliest is null || day < earliest))
+            {
+                earliest = day;
+            }
+        }
+
+        return earliest;
+    }
 
     /// <summary>键盘布局：每一行是 [显示名, vk, 宽度权重]。宽度按真实键帽比例。</summary>
     private const string Template = """

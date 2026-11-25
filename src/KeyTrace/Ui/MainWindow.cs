@@ -27,6 +27,7 @@ internal sealed class MainWindow : Window
 
     private readonly Ellipse _statusDot;
     private readonly TextBlock _statusText;
+    private readonly Button _dashboardBtn;
     private readonly Button _actionBtn;
     private readonly TextBlock _dateText;
     private readonly TextBlock _countValueText;
@@ -76,6 +77,12 @@ internal sealed class MainWindow : Window
 
         _statusDot = new Ellipse { Width = 7, Height = 7, VerticalAlignment = VerticalAlignment.Center };
         _statusText = new TextBlock { FontSize = 12, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(5, 0, 0, 0) };
+
+        _dashboardBtn = DarkTheme.CreateButton("统计看板", primary: false, compact: true);
+        _dashboardBtn.Padding = new Thickness(10, 4, 10, 4);
+        _dashboardBtn.Margin = new Thickness(0, 0, 6, 0);
+        _dashboardBtn.ToolTip = "生成并在浏览器中打开本地离线统计看板";
+        _dashboardBtn.Click += (_, _) => OpenDashboardRequested?.Invoke();
 
         _actionBtn = DarkTheme.CreateButton(isViewerMode ? "升级后台" : "暂停", primary: isViewerMode, compact: true);
         _actionBtn.Padding = new Thickness(10, 4, 10, 4);
@@ -162,6 +169,7 @@ internal sealed class MainWindow : Window
     public bool AllowClose { get; set; }
 
     public event Action? TogglePauseRequested;
+    public event Action? OpenDashboardRequested;
 
     public void BringToFront()
     {
@@ -283,8 +291,11 @@ internal sealed class MainWindow : Window
         leftBrand.Children.Add(statusPill);
         header.Children.Add(leftBrand);
 
-        DockPanel.SetDock(_actionBtn, Dock.Right);
-        header.Children.Add(_actionBtn);
+        StackPanel rightActions = new() { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        rightActions.Children.Add(_dashboardBtn);
+        rightActions.Children.Add(_actionBtn);
+        DockPanel.SetDock(rightActions, Dock.Right);
+        header.Children.Add(rightActions);
         Grid.SetRow(header, 0);
         root.Children.Add(header);
 
@@ -505,6 +516,7 @@ internal sealed class MainWindow : Window
         string[] candidates =
         [
             System.IO.Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "scripts", "install-task.bat"),
+            System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Project", "keytrace", "scripts", "install-task.bat"),
             System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "keytrace", "scripts", "install-task.bat"),
         ];
 

@@ -36,6 +36,7 @@ internal static class Program
         DrillPageTests();
         DrillHistoryTests();
         UserConfigTests();
+        StandaloneDashboardAndTrayTests();
         ExclusionListTests();
         LiveTelemetryTests();
         DesktopStatsServiceTests();
@@ -626,7 +627,8 @@ internal static class Program
             False("默认关闭悬浮条", def.ShowMiniHud);
             True("默认开启 UIA 文本采集", def.CaptureText);
             False("默认显示明文", def.HideLiveText);
-            Eq("默认网页练习地址", "http://localhost:3000/", def.WebPracticeUrl);
+            True("默认不配置网页练习地址（与外部网页解耦）", def.WebPracticeUrl is null && !def.HasWebPracticeUrl);
+            False("默认隐藏托盘网页练习入口", DesktopAppHost.ShouldShowWebPractice(def));
             True("默认自定义排除为空", def.ExtraExclusions.Count == 0);
 
             UserConfig custom = new()
@@ -638,7 +640,7 @@ internal static class Program
                 CaptureText = false,
                 ImeOverride = "  shuangpin/ziranma ",
                 ExtraExclusions = [" bank.exe ", "BANK.exe", "", "wechat.exe"],
-                WebPracticeUrl = "http://localhost:3000/keytrace",
+                WebPracticeUrl = "  http://localhost:3000/keytrace  ",
             };
             custom.Save(dir);
 
@@ -649,19 +651,208 @@ internal static class Program
             False("纯键码开关往返", reloaded.CaptureText);
             Eq("输入法方案往返并 trim", "shuangpin/ziranma", reloaded.ImeOverride ?? "");
             Eq("排除列表去重与清理空白", "2", reloaded.ExtraExclusions.Count.ToString());
-            Eq("网页地址往返", "http://localhost:3000/keytrace", reloaded.WebPracticeUrl);
+            Eq("网页地址往返并 trim", "http://localhost:3000/keytrace", reloaded.WebPracticeUrl ?? "");
+            True("配置网页地址后启用托盘入口", DesktopAppHost.ShouldShowWebPractice(reloaded));
+
+            // 空白网页地址保存/读取后应规范化为 null
+            reloaded.WebPracticeUrl = "   ";
+            reloaded.Save(dir);
+            UserConfig cleared = UserConfig.Load(dir);
+            True("空白网页地址规范化为 null", cleared.WebPracticeUrl is null && !cleared.HasWebPracticeUrl);
+
+            // 兼容缺少字段或小驼峰 webPracticeUrl 的手写 JSON
+            File.WriteAllText(UserConfig.FilePath(dir), "{}");
+            True("缺失 webPracticeUrl 字段安全读取为 null", UserConfig.Load(dir).WebPracticeUrl is null);
+
+            File.WriteAllText(UserConfig.FilePath(dir), "{\"webPracticeUrl\": \"   \"}");
+            True("小驼峰空 webPracticeUrl 规范化为 null", UserConfig.Load(dir).WebPracticeUrl is null);
+
+            File.WriteAllText(UserConfig.FilePath(dir), "{\"webPracticeUrl\": \" https://example.com/practice \"}");
+            Eq("小驼峰 webPracticeUrl 正常读取并 trim", "https://example.com/practice", UserConfig.Load(dir).WebPracticeUrl ?? "");
 
             // 损坏的 JSON 应安全回落默认值
             File.WriteAllText(UserConfig.FilePath(dir), "{ not valid json !!!");
             UserConfig broken = UserConfig.Load(dir);
             False("损坏 JSON 回落默认悬浮条设置", broken.ShowMiniHud);
             True("损坏 JSON 回落默认开启文本采集", broken.CaptureText);
+            True("损坏 JSON 回落默认无网页地址", broken.WebPracticeUrl is null);
         }
         finally
         {
             if (Directory.Exists(dir))
             {
                 Directory.Delete(dir, recursive: true);
+            }
+        }
+    }
+
+    private static void StandaloneDashboardAndTrayTests()
+    {
+        Section("StandaloneDashboardAndTray");
+
+        // 1. 托盘菜单：默认（未配置网页地址）不显示"打开网页练习"，始终显示"查看统计看板"
+        bool dashboardClicked = false;
+        bool webClicked = false;
+        using (System.Windows.Forms.ContextMenuStrip standaloneMenu = TrayApplication.BuildContextMenu(
+            new System.Windows.Forms.ToolStripMenuItem("status"),
+            new System.Windows.Forms.ToolStripMenuItem("main"),
+            new System.Windows.Forms.ToolStripMenuItem("hud"),
+            new System.Windows.Forms.ToolStripMenuItem("pause"),
+            showWebPractice: false,
+            onOpenDashboard: () => dashboardClicked = true,
+            onOpenWebPractice: () => webClicked = true,
+            onExit: () => { }))
+        {
+            System.Collections.Generic.List<string?> texts = [.. standaloneMenu.Items
+                .Cast<System.Windows.Forms.ToolStripItem>()
+                .Select(i => i.Text)];
+            True("独立模式托盘包含查看统计看板", texts.Contains(TrayApplication.OpenDashboardMenuText));
+            False("独立模式托盘隐藏打开网页练习", texts.Contains(TrayApplication.OpenWebPracticeMenuText));
+
+            System.Windows.Forms.ToolStripItem dashItem = standaloneMenu.Items
+                .Cast<System.Windows.Forms.ToolStripItem>()
+                .First(i => i.Text == TrayApplication.OpenDashboardMenuText);
+            dashItem.PerformClick();
+            True("点击查看统计看板触发回调", dashboardClicked);
+            False("独立模式不触发网页练习回调", webClicked);
+        }
+
+        // 2. 托盘菜单：配置 WebPracticeUrl 后显示"打开网页练习"且可触发
+        using (System.Windows.Forms.ContextMenuStrip linkedMenu = TrayApplication.BuildContextMenu(
+            new System.Windows.Forms.ToolStripMenuItem("status"),
+            new System.Windows.Forms.ToolStripMenuItem("main"),
+            new System.Windows.Forms.ToolStripMenuItem("hud"),
+            new System.Windows.Forms.ToolStripMenuItem("pause"),
+            showWebPractice: true,
+            onOpenDashboard: () => { },
+            onOpenWebPractice: () => webClicked = true,
+            onExit: () => { }))
+        {
+            System.Collections.Generic.List<string?> texts = [.. linkedMenu.Items
+                .Cast<System.Windows.Forms.ToolStripItem>()
+                .Select(i => i.Text)];
+            True("配置网页地址时托盘保留查看统计看板", texts.Contains(TrayApplication.OpenDashboardMenuText));
+            True("配置网页地址时托盘显示打开网页练习", texts.Contains(TrayApplication.OpenWebPracticeMenuText));
+
+            System.Windows.Forms.ToolStripItem webItem = linkedMenu.Items
+                .Cast<System.Windows.Forms.ToolStripItem>()
+                .First(i => i.Text == TrayApplication.OpenWebPracticeMenuText);
+            webItem.PerformClick();
+            True("点击打开网页练习触发回调", webClicked);
+        }
+
+        // 3. 独立一键生成并打开本地离线统计看板（含空数据、近 7 天数据、历史回退、异常兜底）
+        string baseDir = Path.Combine(Path.GetTempPath(), "keytrace-dash-" + Guid.NewGuid().ToString("N")[..8]);
+        string eventsDir = Path.Combine(baseDir, "events");
+        try
+        {
+            DateOnly today = new(2026, 11, 25);
+
+            // 3a. 空目录不崩溃，生成合法空看板并给出提示
+            bool flushed = false;
+            string? openedPath = null;
+            string? notified = null;
+            DashboardGenerationResult emptyRes = DesktopAppHost.OpenStandaloneDashboard(
+                eventsDir,
+                baseDir,
+                flushEvents: () => flushed = true,
+                openPath: p => openedPath = p,
+                notify: m => notified = m,
+                todayOverride: today);
+            True("空事件目录生成看板不崩溃", emptyRes.Success);
+            True("生成前调用落盘刷新", flushed);
+            Eq("空事件目录事件数为 0", "0", emptyRes.EventCount.ToString());
+            Eq("空看板路径与打开路径一致", Dashboard.ReportFilePath(baseDir), openedPath ?? "");
+            True("空看板已落盘", File.Exists(openedPath!));
+            True("空事件目录给出友好提示", !string.IsNullOrEmpty(notified));
+            string emptyHtml = File.ReadAllText(openedPath!);
+            True("空看板为完整离线 HTML", emptyHtml.Contains("打字画像") && !emptyHtml.Contains("__DATA__"));
+            False("空看板不含任何外链", emptyHtml.Contains("http://") || emptyHtml.Contains("https://"));
+
+            // 3b. 有近期事件时汇总并写入真实统计
+            Directory.CreateDirectory(eventsDir);
+            long t0 = new DateTimeOffset(today.ToDateTime(new TimeOnly(9, 30))).ToUnixTimeMilliseconds();
+            System.Collections.Generic.List<string> lines = [];
+            for (int i = 0; i < 6; i++)
+            {
+                lines.Add(new KeyEvent
+                {
+                    Ts = t0 + i * 200,
+                    Mono = 1000 + i * 200,
+                    Ev = "kd",
+                    Vk = 'A' + i,
+                    Sc = 30,
+                    Mods = 0,
+                    Exe = "notepad.exe",
+                    Sid = "s1",
+                }.ToJsonLine());
+            }
+
+            File.WriteAllLines(Path.Combine(eventsDir, $"{today:yyyy-MM-dd}.jsonl"), lines);
+
+            openedPath = null;
+            notified = null;
+            DashboardGenerationResult populatedRes = DesktopAppHost.OpenStandaloneDashboard(
+                eventsDir,
+                baseDir,
+                flushEvents: null,
+                openPath: p => openedPath = p,
+                notify: m => notified = m,
+                todayOverride: today);
+            True("有近期事件时成功生成看板", populatedRes.Success && populatedRes.EventCount == 6);
+            False("有近期事件时不回退全部历史", populatedRes.UsedAllHistory);
+            True("有近期事件时不弹空数据提醒", notified is null);
+            string populatedHtml = File.ReadAllText(openedPath!);
+            True("看板内嵌实际应用数据", populatedHtml.Contains("notepad.exe"));
+
+            // 3c. 近 7 天无事件但更早有历史数据时自动回退全部历史
+            File.Delete(Path.Combine(eventsDir, $"{today:yyyy-MM-dd}.jsonl"));
+            DateOnly olderDay = today.AddDays(-20);
+            long olderTs = new DateTimeOffset(olderDay.ToDateTime(new TimeOnly(14, 0))).ToUnixTimeMilliseconds();
+            File.WriteAllLines(Path.Combine(eventsDir, $"{olderDay:yyyy-MM-dd}.jsonl"), [
+                new KeyEvent
+                {
+                    Ts = olderTs,
+                    Mono = 1000,
+                    Ev = "kd",
+                    Vk = 'K',
+                    Sc = 37,
+                    Mods = 0,
+                    Exe = "code.exe",
+                    Sid = "s-old",
+                }.ToJsonLine(),
+            ]);
+
+            DashboardGenerationResult historyRes = DesktopAppHost.OpenStandaloneDashboard(
+                eventsDir,
+                baseDir,
+                flushEvents: null,
+                openPath: _ => { },
+                notify: _ => { },
+                todayOverride: today);
+            True("近 7 天为空时自动回退全部历史", historyRes.Success && historyRes.UsedAllHistory && historyRes.EventCount == 1);
+
+            // 3d. 输出目标被文件占用导致无法写入时优雅报错、不抛异常、不打开浏览器
+            string blockedBase = Path.Combine(baseDir, "not-a-directory");
+            File.WriteAllText(blockedBase, "blocker");
+            bool openedOnFail = false;
+            string? failNotice = null;
+            DashboardGenerationResult failRes = DesktopAppHost.OpenStandaloneDashboard(
+                eventsDir,
+                blockedBase,
+                flushEvents: null,
+                openPath: _ => openedOnFail = true,
+                notify: m => failNotice = m,
+                todayOverride: today);
+            False("写入失败时返回 Success=false 且不崩溃", failRes.Success);
+            False("写入失败时不尝试打开浏览器", openedOnFail);
+            True("写入失败时通过托盘提示错误", !string.IsNullOrEmpty(failNotice));
+        }
+        finally
+        {
+            if (Directory.Exists(baseDir))
+            {
+                Directory.Delete(baseDir, recursive: true);
             }
         }
     }

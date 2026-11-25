@@ -1,7 +1,10 @@
 using System;
 using System.Diagnostics;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
+using KeyTrace.Analysis;
 using KeyTrace.Collect;
 
 namespace KeyTrace.Ui;
@@ -25,12 +28,39 @@ internal static class DesktopAppHost
         LiveTelemetry telemetry = new();
         collector.EventRecorded += telemetry.Observe;
 
-        TrayApplication tray = new(config.ShowMiniHud);
+        bool showWebPractice = ShouldShowWebPractice(config);
+        TrayApplication tray = new(config.ShowMiniHud, showWebPractice);
         MainWindow? mainWindow = null;
         MiniHudWindow? miniHud = null;
         bool exiting = false;
+        int dashboardBusy = 0;
 
         DispatcherTimer hudTimer = new() { Interval = TimeSpan.FromSeconds(1) };
+
+        void OpenDashboardAsync()
+        {
+            if (exiting || Interlocked.Exchange(ref dashboardBusy, 1) != 0)
+            {
+                return;
+            }
+
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    OpenStandaloneDashboard(
+                        collector.DataDirectory,
+                        baseDir,
+                        writer.Flush,
+                        path => OpenUrl(path, tray.Notify),
+                        tray.Notify);
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref dashboardBusy, 0);
+                }
+            });
+        }
 
         void SyncMiniHudVisual()
         {
@@ -79,6 +109,7 @@ internal static class DesktopAppHost
                     isPausedInitial: collector.IsPaused);
 
                 mainWindow.TogglePauseRequested += collector.TogglePause;
+                mainWindow.OpenDashboardRequested += OpenDashboardAsync;
             }
 
             mainWindow.SetPaused(collector.IsPaused);
@@ -119,9 +150,20 @@ internal static class DesktopAppHost
         };
 
         tray.OpenWindowRequested += OpenMainWindow;
+        tray.OpenDashboardRequested += OpenDashboardAsync;
         tray.ToggleMiniHudRequested += () => SetMiniHudVisible(!config.ShowMiniHud);
         tray.TogglePauseRequested += collector.TogglePause;
-        tray.OpenWebPracticeRequested += () => OpenUrl(config.WebPracticeUrl, tray.Notify);
+        if (showWebPractice)
+        {
+            tray.OpenWebPracticeRequested += () =>
+            {
+                if (!string.IsNullOrWhiteSpace(config.WebPracticeUrl))
+                {
+                    OpenUrl(config.WebPracticeUrl, tray.Notify);
+                }
+            };
+        }
+
         tray.ExitRequested += () =>
         {
             collector.RequestStop();
@@ -183,6 +225,32 @@ internal static class DesktopAppHost
             isPausedInitial: false)
         {
             AllowClose = true,
+        };
+
+        int dashboardBusy = 0;
+        mainWindow.OpenDashboardRequested += () =>
+        {
+            if (Interlocked.Exchange(ref dashboardBusy, 1) != 0)
+            {
+                return;
+            }
+
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    OpenStandaloneDashboard(
+                        eventsDir,
+                        baseDir,
+                        flushEvents: null,
+                        path => OpenUrl(path, notify: null),
+                        notify: null);
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref dashboardBusy, 0);
+                }
+            });
         };
 
         DispatcherTimer hudTimer = new() { Interval = TimeSpan.FromSeconds(1) };
@@ -276,6 +344,42 @@ internal static class DesktopAppHost
         {
             // 配置保存失败不应打断主流程
         }
+    }
+
+    internal static bool ShouldShowWebPractice(UserConfig config) => config.HasWebPracticeUrl;
+
+    internal static DashboardGenerationResult OpenStandaloneDashboard(
+        string eventsDir,
+        string baseDir,
+        Action? flushEvents,
+        Action<string> openPath,
+        Action<string>? notify,
+        int days = Dashboard.DefaultLookbackDays,
+        DateOnly? todayOverride = null)
+    {
+        try
+        {
+            flushEvents?.Invoke();
+        }
+        catch (Exception)
+        {
+            // 落盘刷新异常不应阻断已写入日志的看板生成
+        }
+
+        DashboardGenerationResult result = Dashboard.GenerateFromEvents(eventsDir, baseDir, days, todayOverride);
+        if (!result.Success || string.IsNullOrEmpty(result.ReportPath))
+        {
+            notify?.Invoke($"生成统计看板失败：{result.ErrorMessage ?? "未知错误"}");
+            return result;
+        }
+
+        if (result.EventCount == 0)
+        {
+            notify?.Invoke("暂无打字记录，已打开空统计看板。正常打字一段时间后再查看即可看到完整统计。");
+        }
+
+        openPath(result.ReportPath);
+        return result;
     }
 
     private static void OpenUrl(string url, Action<string>? notify)

@@ -10,6 +10,9 @@ namespace KeyTrace.Ui;
 /// </summary>
 internal sealed class TrayApplication : IDisposable
 {
+    internal const string OpenDashboardMenuText = "查看统计看板";
+    internal const string OpenWebPracticeMenuText = "打开网页练习";
+
     private const string AppName = "KeyTrace";
 
     private readonly NotifyIcon _tray;
@@ -22,7 +25,7 @@ internal sealed class TrayApplication : IDisposable
     private long _eventCount;
     private bool _disposed;
 
-    public TrayApplication(bool miniHudChecked)
+    public TrayApplication(bool miniHudChecked, bool showWebPractice = false)
     {
         _recordingIcon = AppIcons.LoadTrayIcon(paused: false);
         _pausedIcon = AppIcons.LoadTrayIcon(paused: true);
@@ -39,15 +42,15 @@ internal sealed class TrayApplication : IDisposable
 
         _togglePauseItem = new ToolStripMenuItem("暂停录制 (Ctrl+Alt+P)", null, (_, _) => TogglePauseRequested?.Invoke());
 
-        ContextMenuStrip menu = new();
-        menu.Items.Add(_statusItem);
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add(openMainItem);
-        menu.Items.Add(_miniHudItem);
-        menu.Items.Add(_togglePauseItem);
-        menu.Items.Add(new ToolStripMenuItem("打开网页练习", null, (_, _) => OpenWebPracticeRequested?.Invoke()));
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add(new ToolStripMenuItem("退出", null, (_, _) => ExitRequested?.Invoke()));
+        ContextMenuStrip menu = BuildContextMenu(
+            _statusItem,
+            openMainItem,
+            _miniHudItem,
+            _togglePauseItem,
+            showWebPractice,
+            onOpenDashboard: () => OpenDashboardRequested?.Invoke(),
+            onOpenWebPractice: () => OpenWebPracticeRequested?.Invoke(),
+            onExit: () => ExitRequested?.Invoke());
 
         _tray = new NotifyIcon
         {
@@ -67,7 +70,35 @@ internal sealed class TrayApplication : IDisposable
         _tray.DoubleClick += (_, _) => OpenWindowRequested?.Invoke();
     }
 
+    internal static ContextMenuStrip BuildContextMenu(
+        ToolStripMenuItem statusItem,
+        ToolStripMenuItem openMainItem,
+        ToolStripMenuItem miniHudItem,
+        ToolStripMenuItem togglePauseItem,
+        bool showWebPractice,
+        Action onOpenDashboard,
+        Action onOpenWebPractice,
+        Action onExit)
+    {
+        ContextMenuStrip menu = new();
+        menu.Items.Add(statusItem);
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(openMainItem);
+        menu.Items.Add(new ToolStripMenuItem(OpenDashboardMenuText, null, (_, _) => onOpenDashboard()));
+        menu.Items.Add(miniHudItem);
+        menu.Items.Add(togglePauseItem);
+        if (showWebPractice)
+        {
+            menu.Items.Add(new ToolStripMenuItem(OpenWebPracticeMenuText, null, (_, _) => onOpenWebPractice()));
+        }
+
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(new ToolStripMenuItem("退出", null, (_, _) => onExit()));
+        return menu;
+    }
+
     public event Action? OpenWindowRequested;
+    public event Action? OpenDashboardRequested;
     public event Action? ToggleMiniHudRequested;
     public event Action? TogglePauseRequested;
     public event Action? OpenWebPracticeRequested;

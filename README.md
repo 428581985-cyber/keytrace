@@ -20,7 +20,7 @@ keybr 这类工具只在它自己的练习题里测你。真实工作中打什�
 ## 用法
 
 ```bash
-keytrace run                         # 常驻录制，带托盘图标，Ctrl+Alt+P 暂停
+keytrace run                         # 常驻录制，带托盘图标（可一键查看离线统计看板），Ctrl+Alt+P 暂停
 keytrace pause
 keytrace resume
 keytrace stop

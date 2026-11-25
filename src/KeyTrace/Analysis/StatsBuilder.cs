@@ -34,6 +34,21 @@ internal static class StatsBuilder
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
 
+    public static string BuildJson(AttributionResult r, StatsContext ctx)
+    {
+        using MemoryStream stream = new();
+        using (Utf8JsonWriter w = new(stream, new JsonWriterOptions
+        {
+            Indented = true,
+            Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        }))
+        {
+            WriteJsonCore(w, r, ctx);
+        }
+
+        return Encoding.UTF8.GetString(stream.ToArray());
+    }
+
     public static void WriteJson(string path, AttributionResult r, StatsContext ctx)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
@@ -44,6 +59,12 @@ internal static class StatsBuilder
             Indented = true,
             Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
         });
+
+        WriteJsonCore(w, r, ctx);
+    }
+
+    private static void WriteJsonCore(Utf8JsonWriter w, AttributionResult r, StatsContext ctx)
+    {
 
         w.WriteStartObject();
         w.WriteNumber("v", 1);
