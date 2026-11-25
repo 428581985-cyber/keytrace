@@ -20,7 +20,7 @@ if %errorlevel% neq 0 (
 )
 
 set "DEST=%LOCALAPPDATA%\KeyTrace"
-set "REPO=%USERPROFILE%\keytrace"
+for %%I in ("%~dp0..") do set "REPO=%%~fI"
 
 echo.
 echo  KeyTrace - install / update logon task
