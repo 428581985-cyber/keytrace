@@ -515,6 +515,7 @@ internal sealed class MainWindow : Window
     {
         string[] candidates =
         [
+            System.IO.Path.Combine(AppContext.BaseDirectory, "scripts", "install-task.bat"),
             System.IO.Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "scripts", "install-task.bat"),
             System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Project", "keytrace", "scripts", "install-task.bat"),
             System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "keytrace", "scripts", "install-task.bat"),

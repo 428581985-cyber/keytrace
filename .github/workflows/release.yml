@@ -1,0 +1,133 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version label (e.g. v0.1.0; defaults to dev for dry-run packaging)'
+        required: false
+        default: 'dev'
+        type: string
+      create_release:
+        description: 'Also create or update a GitHub Release for this version tag'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Resolve release version
+        id: meta
+        shell: pwsh
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_FULL: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if ($env:EVENT_NAME -eq 'push' -and $env:REF_FULL.StartsWith('refs/tags/')) {
+            $ver = $env:REF_NAME
+          } elseif (-not [string]::IsNullOrWhiteSpace($env:INPUT_VERSION)) {
+            $ver = $env:INPUT_VERSION.Trim()
+          } else {
+            $ver = 'dev'
+          }
+          "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Resolved release version: $ver"
+
+      - name: Build (Release)
+        run: dotnet build -c Release
+
+      - name: Test
+        run: dotnet run --project tests/KeyTrace.Tests -c Release
+
+      - name: Package release zip
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          & ./scripts/package-release.ps1 -Version $env:RELEASE_VERSION -Runtime win-x64
+
+      - name: Smoke-test standalone release zip
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ver = $env:RELEASE_VERSION
+          $zip = "dist/KeyTrace-$ver-win-x64.zip"
+          $tmp = Join-Path $env:RUNNER_TEMP "keytrace-smoke-$ver"
+          if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
+          Expand-Archive -Path $zip -DestinationPath $tmp -Force
+
+          $exe = Join-Path $tmp "keytrace.exe"
+          if (-not (Test-Path $exe)) { throw "keytrace.exe missing from zip" }
+
+          function Invoke-KeyTrace([string[]]$ArgList) {
+            $outFile = Join-Path $tmp ("out-" + [guid]::NewGuid().ToString("N") + ".txt")
+            $errFile = Join-Path $tmp ("err-" + [guid]::NewGuid().ToString("N") + ".txt")
+            try {
+              $proc = Start-Process -FilePath $exe -ArgumentList $ArgList -WorkingDirectory $tmp `
+                -NoNewWindow -Wait -PassThru `
+                -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+              $stdout = if (Test-Path $outFile) { Get-Content $outFile -Raw -Encoding UTF8 } else { '' }
+              $stderr = if (Test-Path $errFile) { Get-Content $errFile -Raw -Encoding UTF8 } else { '' }
+              if ($proc.ExitCode -ne 0) {
+                throw "keytrace $($ArgList -join ' ') exited with $($proc.ExitCode). stderr: $stderr"
+              }
+              if (-not [string]::IsNullOrWhiteSpace($stderr)) {
+                throw "keytrace $($ArgList -join ' ') wrote to stderr: $stderr"
+              }
+              return $stdout
+            } finally {
+              Remove-Item $outFile, $errFile -Force -ErrorAction SilentlyContinue
+            }
+          }
+
+          $verOut = (Invoke-KeyTrace @('--version')).Trim()
+          Write-Host "Version output: $verOut"
+          if (-not $verOut.StartsWith('keytrace ')) { throw "Unexpected --version output: $verOut" }
+
+          $helpOut = Invoke-KeyTrace @('--help')
+          if (-not $helpOut.Contains('keytrace')) { throw "Unexpected --help output" }
+
+          $wordsOut = Join-Path $tmp "smoke-words.txt"
+          $null = Invoke-KeyTrace @('words', '--weak', 'c,v', '--count', '5', '--out', $wordsOut)
+          if (-not (Test-Path $wordsOut) -or (Get-Item $wordsOut).Length -eq 0) {
+            throw "Embedded hanzi table smoke test failed"
+          }
+
+          Remove-Item $tmp -Recurse -Force
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: KeyTrace-${{ steps.meta.outputs.version }}-win-x64
+          path: |
+            dist/KeyTrace-*.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.create_release == true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.version }}
+          generate_release_notes: true
+          files: |
+            dist/KeyTrace-*.zip
+            dist/SHA256SUMS.txt

@@ -11,7 +11,7 @@
     <AssemblyName>keytrace</AssemblyName>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <Version>0.0.1</Version>
+    <Version>0.1.0</Version>
     <ApplicationIcon>..\..\assets\keytrace.ico</ApplicationIcon>
   </PropertyGroup>
 

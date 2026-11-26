@@ -35,9 +35,18 @@ if exist "%DEST%\keytrace.exe" (
 powershell -NoProfile -Command "Get-Process -Name keytrace -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue" >nul 2>&1
 timeout /t 1 /nobreak >nul
 
-echo [2/3] publishing latest build to %DEST%
+echo [2/3] installing keytrace.exe to %DEST%
+if exist "%REPO%\src\KeyTrace\KeyTrace.csproj" goto install_from_source
+if exist "%REPO%\keytrace.exe" goto install_from_release
+echo.
+echo [ERROR] neither src\KeyTrace\KeyTrace.csproj nor keytrace.exe found at %REPO%.
+echo.
+pause
+exit /b 1
+
+:install_from_source
 dotnet publish "%REPO%\src\KeyTrace" -c Release -o "%DEST%"
-if %errorlevel% neq 0 (
+if errorlevel 1 (
     echo.
     echo [ERROR] publish failed.
     echo   Check that the .NET SDK is installed: dotnet --list-sdks
@@ -46,9 +55,24 @@ if %errorlevel% neq 0 (
     pause
     exit /b 1
 )
+goto after_install
+
+:install_from_release
+if not exist "%DEST%" mkdir "%DEST%"
+if /I "%REPO%"=="%DEST%" goto after_install
+copy /Y "%REPO%\keytrace.exe" "%DEST%\keytrace.exe" >nul
+if errorlevel 1 (
+    echo.
+    echo [ERROR] failed to copy %REPO%\keytrace.exe to %DEST%.
+    echo.
+    pause
+    exit /b 1
+)
+
+:after_install
 if not exist "%DEST%\keytrace.exe" (
     echo.
-    echo [ERROR] keytrace.exe missing after publish.
+    echo [ERROR] keytrace.exe missing after install.
     echo.
     pause
     exit /b 1

@@ -1,6 +1,7 @@
 using System;
 using System.Globalization;
 using System.IO;
+using System.Reflection;
 using System.Threading;
 using KeyTrace.Analysis;
 using KeyTrace.Collect;
@@ -11,7 +12,23 @@ namespace KeyTrace;
 
 internal static class Program
 {
-    private const string Version = "0.0.1";
+    private static readonly string Version = ResolveVersion();
+
+    private static string ResolveVersion()
+    {
+        Assembly assembly = typeof(Program).Assembly;
+        string? info = assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion;
+        if (!string.IsNullOrWhiteSpace(info))
+        {
+            int plus = info.IndexOf('+');
+            return plus > 0 ? info[..plus] : info;
+        }
+
+        Version? v = assembly.GetName().Version;
+        return v is not null ? $"{v.Major}.{v.Minor}.{v.Build}" : "0.1.0";
+    }
 
     [STAThread]
     private static int Main(string[] args)
