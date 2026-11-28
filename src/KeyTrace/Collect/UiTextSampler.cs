@@ -46,6 +46,7 @@ internal sealed class UiTextSampler : IDisposable
     private volatile bool _stop;
 
     private int _lastPid = -1;
+    private int[]? _lastRuntimeId;
     private string _seenText = string.Empty;
     private string _confirmedText = string.Empty;
     private string _pendingText = string.Empty;
@@ -164,20 +165,38 @@ internal sealed class UiTextSampler : IDisposable
             text = text.Substring(0, MaxTextLength);
         }
 
-        if (pid != _lastPid)
+        int[]? runtimeId = TryGetRuntimeId(target);
+        bool pidChanged = pid != _lastPid;
+        bool elementSwitched =
+            runtimeId is not null &&
+            _lastRuntimeId is not null &&
+            !RuntimeIdEquals(_lastRuntimeId, runtimeId);
+
+        if (pidChanged || elementSwitched)
         {
-            _cachedElement = null;
-            _cachedPid = -1;
-            _missCount = 0;
-            _retryAfter = DateTime.MinValue;
-            // 换控件/换应用：直接立基线，不把整篇已有内容当成一次输入
+            if (pidChanged)
+            {
+                _cachedElement = null;
+                _cachedPid = -1;
+                _missCount = 0;
+                _retryAfter = DateTime.MinValue;
+            }
+            // 换控件/换应用/同进程切输入框：直接立基线，不把旧输入框与新输入框的差分当成一次输入
             Trace($"baseline {exe} pid={pid} len={text.Length}");
             _fastUntil = DateTime.UtcNow.AddMilliseconds(FastWindowMs);
             _lastPid = pid;
+            _lastRuntimeId = runtimeId;
             _seenText = text;
             _confirmedText = text;
+            _pendingText = string.Empty;
             _seenAt = DateTime.UtcNow;
+            _pendingSince = DateTime.MinValue;
             return;
+        }
+
+        if (_lastRuntimeId is null && runtimeId is not null)
+        {
+            _lastRuntimeId = runtimeId;
         }
 
         if (text != _seenText)
@@ -480,6 +499,42 @@ internal sealed class UiTextSampler : IDisposable
         return builder.ToString();
     }
 
+    internal static bool RuntimeIdEquals(int[]? a, int[]? b)
+    {
+        if (a is null || b is null)
+        {
+            return a is null && b is null;
+        }
+
+        if (a.Length != b.Length)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < a.Length; i++)
+        {
+            if (a[i] != b[i])
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static int[]? TryGetRuntimeId(AutomationElement element)
+    {
+        try
+        {
+            int[] id = element.GetRuntimeId();
+            return id.Length > 0 ? id : null;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
     internal static bool ContainsNonAscii(string text)
     {
         foreach (char c in text)
@@ -533,6 +588,7 @@ internal sealed class UiTextSampler : IDisposable
     private void Reset()
     {
         _lastPid = -1;
+        _lastRuntimeId = null;
         _seenText = string.Empty;
         _confirmedText = string.Empty;
         _pendingText = string.Empty;

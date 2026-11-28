@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
+using KeyTrace.Analysis;
 using KeyTrace.Control;
 using KeyTrace.Interop;
 
@@ -68,6 +69,7 @@ internal sealed class RawInputCollector : IDisposable
     private string _keysSid = string.Empty;
 
     /// <summary>上一次写 meta 的日期。跨天要补一条，否则新文件不知道自己是什么输入法方案。</summary>
+    private readonly HashSet<int> _pressedVks = [];
     private DateOnly _metaDay;
     private bool _hotkeyRegistered;
     private bool _running;
@@ -212,6 +214,10 @@ internal sealed class RawInputCollector : IDisposable
         if (nowPaused)
         {
             _pauseSignal.Set();
+            lock (_sessionGate)
+            {
+                _pressedVks.Clear();
+            }
         }
         else
         {
@@ -427,11 +433,17 @@ internal sealed class RawInputCollector : IDisposable
             {
                 _keysSid = sid;
                 _keysSinceCommit = 0;
+                _pressedVks.Clear();
             }
 
             keys = _keysSinceCommit;
             if (eventName == "commit")
             {
+                if (keys <= 0)
+                {
+                    return;
+                }
+
                 _keysSinceCommit = 0;
             }
         }
@@ -481,7 +493,27 @@ internal sealed class RawInputCollector : IDisposable
             return;
         }
 
-        string sid = ObserveSession(exe, mono, today, countKey: !isUp, resetKeysOnNewSession: true);
+        int mods = ReadModifiers();
+        bool isRepeat;
+        lock (_sessionGate)
+        {
+            if (isUp)
+            {
+                _pressedVks.Remove(kb.VKey);
+                isRepeat = false;
+            }
+            else
+            {
+                isRepeat = !_pressedVks.Add(kb.VKey);
+            }
+        }
+
+        string sid = ObserveSession(
+            exe,
+            mono,
+            today,
+            countKey: ShouldCountTypingKey(kb.VKey, mods, isUp, isRepeat),
+            resetKeysOnNewSession: true);
 
         KeyEvent ev = new()
         {
@@ -490,7 +522,7 @@ internal sealed class RawInputCollector : IDisposable
             Ev = isUp ? "ku" : "kd",
             Vk = kb.VKey,
             Sc = kb.MakeCode,
-            Mods = ReadModifiers(),
+            Mods = mods,
             Pid = (int)pid,
             Exe = exe,
             Sid = sid,
@@ -499,6 +531,31 @@ internal sealed class RawInputCollector : IDisposable
         _writer.Write(ev.ToJsonLine(), today);
         EventCount++;
         EventRecorded?.Invoke(ev);
+    }
+
+    internal static bool ShouldCountTypingKey(int vk, int mods, bool isUp, bool isRepeat)
+    {
+        if (isUp)
+        {
+            return false;
+        }
+
+        if ((mods & 0b1110) != 0)
+        {
+            return false;
+        }
+
+        if (KeyCatalog.IsModifier(vk))
+        {
+            return false;
+        }
+
+        if (isRepeat && vk != 8)
+        {
+            return false;
+        }
+
+        return true;
     }
 
     private string ObserveSession(string exe, long mono, DateOnly today, bool countKey, bool resetKeysOnNewSession)
@@ -510,6 +567,7 @@ internal sealed class RawInputCollector : IDisposable
             {
                 _keysSid = sid;
                 _keysSinceCommit = 0;
+                _pressedVks.Clear();
             }
 
             if (countKey)

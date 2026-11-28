@@ -43,6 +43,7 @@ internal static class Program
         ControlSignalsTests();
         AppIconsTests();
         ImeConfigTests();
+        CollectorFilterTests();
 
         Console.WriteLine();
         Console.WriteLine($"通过 {_passed}，失败 {_failed}");
@@ -74,6 +75,25 @@ internal static class Program
         Eq("去掉图标字体字符", "abc", UiTextSampler.StripPrivateUse("\uE000abc\uF8FF"));
         Eq("纯图标字符变成空", string.Empty, UiTextSampler.StripPrivateUse("\uea88\ueb62"));
         Eq("没有图标字符就原样返回", "你好", UiTextSampler.StripPrivateUse("你好"));
+    }
+
+    private static void CollectorFilterTests()
+    {
+        Section("采集过滤");
+        True("RuntimeId 相同", UiTextSampler.RuntimeIdEquals([42, 7], [42, 7]));
+        False("RuntimeId 不同判定为切换控件", UiTextSampler.RuntimeIdEquals([42, 7], [42, 8]));
+        False("RuntimeId 一方为空不同", UiTextSampler.RuntimeIdEquals([42, 7], null));
+        True("RuntimeId 同为空", UiTextSampler.RuntimeIdEquals(null, null));
+
+        True("普通字母计入击键", RawInputCollector.ShouldCountTypingKey(65, 0, isUp: false, isRepeat: false));
+        True("Shift 大写字母计入击键", RawInputCollector.ShouldCountTypingKey(65, 1, isUp: false, isRepeat: false));
+        False("Ctrl+C 快捷键不计入打字键数", RawInputCollector.ShouldCountTypingKey(67, 2, isUp: false, isRepeat: false));
+        False("Alt 快捷键不计入打字键数", RawInputCollector.ShouldCountTypingKey(65, 4, isUp: false, isRepeat: false));
+        False("Shift 修饰键本身不计入打字键数", RawInputCollector.ShouldCountTypingKey(160, 1, isUp: false, isRepeat: false));
+        False("Ctrl 修饰键本身不计入打字键数", RawInputCollector.ShouldCountTypingKey(162, 2, isUp: false, isRepeat: false));
+        False("非退格长按连发不重复计数", RawInputCollector.ShouldCountTypingKey(65, 0, isUp: false, isRepeat: true));
+        True("退格长按连发允许计数", RawInputCollector.ShouldCountTypingKey(8, 0, isUp: false, isRepeat: true));
+        False("抬起事件不计数", RawInputCollector.ShouldCountTypingKey(65, 0, isUp: true, isRepeat: false));
     }
 
     private static void SessionTests()
